@@ -7,10 +7,11 @@
 
 # When releasing, also update header of Changes file, and CMakeLists.txt,
 # and commit using "devel release" or "Version bump" message
+# Then 'make distclean' 'autoconf' './configure' 'make' 'make test'
 # Then 'make maintainer-dist'
 #AC_INIT([Verilator],[#.### YYYY-MM-DD])
 #AC_INIT([Verilator],[#.### devel])
-AC_INIT([Verilator],[5.035 devel],
+AC_INIT([Verilator],[5.041 devel],
         [https://verilator.org],
         [verilator],[https://verilator.org])
 
@@ -56,6 +57,22 @@ AC_ARG_ENABLE([partial-static],
                CFG_ENABLE_PARTIAL_STATIC=yes)
 AC_MSG_RESULT($CFG_ENABLE_PARTIAL_STATIC)
 
+# Flag to enable compiling with AddressSanitizer
+AC_MSG_CHECKING(whether to use AddressSanitizer)
+AC_ARG_ENABLE([asan],
+              [AS_HELP_STRING([--enable-asan],
+                              [Enable compiling Verilator with ASAN
+                               AddressSanitizer for memory error detection.
+                               This disables tcmalloc.  Does not affect
+                               Verilated models using ASAN.])],
+              [case "${enableval}" in
+                yes) CFG_WITH_ASAN=yes ;;
+                no)  CFG_WITH_ASAN=no ;;
+                *)   AC_MSG_ERROR([bad value '${enableval}' for --enable-asan]) ;;
+               esac],
+               CFG_WITH_ASAN=no)
+AC_MSG_RESULT($CFG_WITH_ASAN)
+
 # Flag to enable linking Verilator with tcmalloc if available
 AC_MSG_CHECKING(whether to use tcmalloc)
 AC_ARG_ENABLE([tcmalloc],
@@ -68,7 +85,12 @@ AC_ARG_ENABLE([tcmalloc],
                 *)   AC_MSG_ERROR([bad value '${enableval}' for --enable-tcmalloc]) ;;
                esac],
               [CFG_WITH_TCMALLOC=check;])
-AC_MSG_RESULT($CFG_WITH_TCMALLOC)
+if test "$CFG_WITH_ASAN" = "yes"; then
+  CFG_WITH_TCMALLOC=no
+  AC_MSG_RESULT("disabled by --enable-asan")
+else
+  AC_MSG_RESULT($CFG_WITH_TCMALLOC)
+fi
 
 # Flag to enable coverage build
 AC_MSG_CHECKING(whether to build for coverage collection)
@@ -177,7 +199,7 @@ AC_PROG_INSTALL
 
 AC_LANG_PUSH(C++)
 CFG_CXX_VERSION=`$CXX --version | head -1`
-AC_MSG_RESULT([compiler $CXX --version = $CFG_CXX_VERSION])
+AC_MSG_RESULT([compiler version... $CXX --version = $CFG_CXX_VERSION])
 AC_SUBST(CFG_CXX_VERSION)
 
 AC_MSG_CHECKING([that C++ compiler can compile simple program])
@@ -431,11 +453,19 @@ AC_SUBST(CFG_CXXFLAGS_COROUTINES)
 AC_SUBST(HAVE_COROUTINES)
 
 # Flags for compiling Verilator internals including parser always
+if test "$CFG_WITH_ASAN" = "yes"; then
+  _MY_CXX_CHECK_IFELSE(-fsanitize=address -DVL_ASAN,
+    [CFG_CXXFLAGS_SRC="$CFG_CXXFLAGS_SRC -fsanitize=address -DVL_ASAN"
+     CFG_LDFLAGS_SRC="$CFG_LDFLAGS_SRC -fsanitize=address"
+     AC_DEFINE([HAVE_ASAN],[1],[Defined if built with AddresSanitizer])]
+  )
+fi
+AC_SUBST(HAVE_ASAN)
 _MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-Qunused-arguments)
+_MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-Wno-shadow)
+_MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-Wno-unused-parameter)
 _MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-Xclang -fno-pch-timestamp)
 _MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-faligned-new)
-_MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-Wno-unused-parameter)
-_MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-Wno-shadow)
 AC_SUBST(CFG_CXXFLAGS_SRC)
 
 # Flags for compiling Verilator parser always (in addition to above CFG_CXXFLAGS_SRC)
@@ -476,6 +506,7 @@ m4_foreach([cflag],[
         [-Wno-bool-operation],
         [-Wno-c++11-narrowing],
         [-Wno-constant-logical-operand],
+        [-Wno-int-in-bool-context],
         [-Wno-non-pod-varargs],
         [-Wno-parentheses-equality],
         [-Wno-shadow],
@@ -546,10 +577,12 @@ _MY_LDLIBS_CHECK_IFELSE(
     _MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-fno-builtin-calloc)
     _MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-fno-builtin-realloc)
     _MY_CXX_CHECK_OPT(CFG_CXXFLAGS_SRC,-fno-builtin-free)
+    AC_DEFINE([HAVE_TCMALLOC],[1],[Defined if have tcmalloc])
    fi],
   [if test "$CFG_WITH_TCMALLOC" = "yes"; then
     AC_MSG_ERROR([--enable-tcmalloc was given but test for ${LTCMALLOC} failed])
    fi])
+AC_SUBST(HAVE_TCMALLOC)
 AC_SUBST(CFG_LIBS)
 
 # Need C++14 at least
@@ -557,18 +590,17 @@ AC_SUBST(CFG_LIBS)
 AC_DEFUN([_MY_CXX_CHECK_CXX_VER],
    [# _MY_CXX_CHECK_CXX_VER(flag) -- Check if compiler runs C++14
     # Set $_my_result
-    AC_LINK_IFELSE(
+    AC_RUN_IFELSE(
      [AC_LANG_PROGRAM([#include <thread>
 #if (__cplusplus < 201402L)
 # error "Too old"
 #endif
-    ], [[ ]])],
-     [_my_result=yes
-      if test -s conftest.err; then
-        if grep -e "$1" conftest.err >/dev/null; then
-          _my_result=no
-        fi
-      fi],
+    ], [[
+       std::thread t([]{});
+       t.join();
+     ]])],
+     [_my_result=yes],
+     [_my_result=no],
      [_my_result=no])
    ])
 

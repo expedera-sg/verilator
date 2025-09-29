@@ -67,11 +67,11 @@ class V3CCtorsBuilder final {
         funcp->slow(!m_type.isClass());  // Only classes construct on fast path
         string preventUnusedStmt;
         if (m_type.isClass()) {
-            funcp->argTypes(EmitCBase::symClassVar());
-            preventUnusedStmt = "(void)vlSymsp;  // Prevent unused variable warning\n";
+            funcp->argTypes(EmitCUtil::symClassVar());
+            preventUnusedStmt = "(void)vlSymsp;  // Prevent unused variable warning";
         } else if (m_type.isCoverage()) {
             funcp->argTypes("bool first");
-            preventUnusedStmt = "(void)first;  // Prevent unused variable warning\n";
+            preventUnusedStmt = "(void)first;  // Prevent unused variable warning";
         }
         if (!preventUnusedStmt.empty()) {
             funcp->addStmtsp(new AstCStmt{m_modp->fileline(), preventUnusedStmt});
@@ -114,7 +114,7 @@ public:
                     callp->argTypes("vlSymsp");
                 } else {
                     if (m_type.isCoverage()) callp->argTypes("first");
-                    callp->selfPointer(VSelfPointerText{VSelfPointerText::This()});
+                    callp->selfPointer(VSelfPointerText{VSelfPointerText::This{}});
                 }
                 rootFuncp->addStmtsp(callp->makeStmt());
             }
@@ -132,7 +132,7 @@ private:
 class CCtorsVisitor final : public VNVisitor {
     // NODE STATE
 
-    // STATE
+    // STATE - for current visit position (use VL_RESTORER)
     AstNodeModule* m_modp = nullptr;  // Current module
     AstCFunc* m_cfuncp = nullptr;  // Current function
     V3CCtorsBuilder* m_varResetp = nullptr;  // Builder of _ctor_var_reset
@@ -161,10 +161,10 @@ class CCtorsVisitor final : public VNVisitor {
         if (v3Global.opt.coverage()) {
             V3CCtorsBuilder configure_coverage{nodep, "_configure_coverage", VCtorType::COVERAGE};
             for (AstNode* np = nodep->stmtsp(); np; np = np->nextp()) {
-                if (AstCoverDecl* const coverp = VN_CAST(np, CoverDecl)) {
+                if (AstNodeCoverDecl* const coverp = VN_CAST(np, NodeCoverDecl)) {
                     // ... else we don't have a static VlSym to be able to coverage insert
                     UASSERT_OBJ(!VN_IS(nodep, Class), coverp,
-                                "CoverDecl should be in class's package, not class itself");
+                                "NodeCoverDecl should be in class's package, not class itself");
                     np = coverp->backp();
                     configure_coverage.add(coverp->unlinkFrBack());
                 }
@@ -177,7 +177,7 @@ class CCtorsVisitor final : public VNVisitor {
             // If can be referred to by base pointer, need virtual delete
             funcp->isVirtual(classp->isExtended());
             funcp->slow(false);
-            insertSc(funcp, classp, VNType::atScDtor);
+            insertSc(funcp, classp, VNType::ScDtor);
             classp->addStmtsp(funcp);
         }
     }
@@ -188,7 +188,7 @@ class CCtorsVisitor final : public VNVisitor {
         m_varResetp = nullptr;
         m_cfuncp = nodep;
         iterateChildren(nodep);
-        if (nodep->name() == "new") insertSc(nodep, m_modp, VNType::atScCtor);
+        if (nodep->name() == "new") insertSc(nodep, m_modp, VNType::ScCtor);
     }
     void visit(AstVar* nodep) override {
         if (nodep->needsCReset()) {
@@ -235,7 +235,7 @@ void V3CCtors::evalAsserts() {
                         // if (signal & CONST(upper_non_clean_mask)) { fail; }
                         AstVarRef* const vrefp
                             = new AstVarRef{varp->fileline(), varp, VAccess::READ};
-                        vrefp->selfPointer(VSelfPointerText{VSelfPointerText::This()});
+                        vrefp->selfPointer(VSelfPointerText{VSelfPointerText::This{}});
                         AstNodeExpr* newp = vrefp;
                         if (varp->isWide()) {
                             newp = new AstWordSel{
@@ -260,7 +260,7 @@ void V3CCtors::evalAsserts() {
 }
 
 void V3CCtors::cctorsAll() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     evalAsserts();
     { CCtorsVisitor{v3Global.rootp()}; }
     V3Global::dumpCheckGlobalTree("cctors", 0, dumpTreeEitherLevel() >= 3);

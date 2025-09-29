@@ -4,10 +4,11 @@
 // To recreate:
 //   Using verilator_ext_tests
 //   t/t_uvm_parse.py --debug --no-dump-tree
-//   Copy to here t/obj_vlt/Vt_uvm_parse/Vt_uvm_parse__inputs.vpp
+//   Insert to here obj_vlt/t_uvm_parse/Vt_uvm_parse__inputs.vpp
 //   M-x untabify
 //   (global-replace-regexp "[ ]+$" "")
 //   (global-replace-regexp ", +" ", ")
+//   (global-replace-regexp (concat "\"[^\" ]*" "/uvm/src") "\"t/uvm/src")
 //   Add this header
 //------------------------------------------------------------------------------
 // Copyright 2007-2011 Mentor Graphics Corporation
@@ -19743,9 +19744,7 @@ endclass
 typedef uvm_sequencer #(uvm_sequence_item) uvm_virtual_sequencer;
 function uvm_sequencer::new (string name, uvm_component parent=null);
   super.new(name, parent);
-//TODO issue #4497 - Fix uvm_sequencer wrong reference type
-//TODO  %Error: t/t_uvm_pkg_todo.vh:19869:21: Function Argument expects a CLASSREFDTYPE 'uvm_sequencer__Tz97_TBz97', got CLASSREFDTYPE 'uvm_sequencer__Tz97'
-//TODO  seq_item_export = new ("seq_item_export", this);
+  seq_item_export = new ("seq_item_export", this);
 endfunction
 function void uvm_sequencer::stop_sequences();
   REQ t;

@@ -1,4 +1,0 @@
-%Error: t/t_class_scope_import.v:11:14: Import statement directly within a class scope is illegal
-   11 |    import pkg::*;
-      |              ^~
-%Error: Exiting due to

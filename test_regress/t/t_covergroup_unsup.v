@@ -10,6 +10,7 @@ module t (/*AUTOARG*/
    );
 
    input clk;
+   logic rst;
    int   a;
    int   b;
    logic c;
@@ -18,6 +19,12 @@ module t (/*AUTOARG*/
    always @(posedge clk) begin
       cyc <= cyc + 1;
    end
+
+   function automatic void funca();
+   endfunction
+
+   function automatic void funcb();
+   endfunction
 
    // NOTE this grammar hasn't been checked with other simulators,
    // is here just to avoid uncovered code lines in the grammar.
@@ -31,7 +38,7 @@ module t (/*AUTOARG*/
       type_option.comment = "type_option_comment";  // cg, cp, cross
       type_option.strobe = 0;  // cg
       type_option.merge_instances = 1;  // cg
-      type_option.distribuge_first = 1;  // cg
+      type_option.distribute_first = 1;  // cg
       option.name = "the_name";  // cg
       option.weight = 1;  // cg, cp, cross
       option.goal = 98;  // cg, cp, cross
@@ -91,7 +98,10 @@ module t (/*AUTOARG*/
       cross a, b { option.comment = "cross"; option.weight = 12; }
    endgroup
    covergroup cg_cross4;
-      cross a, b { function void crossfunc; endfunction; }
+      cross a, b {
+         function void crossfunc; endfunction
+         bins one = crossfunc();
+      }
    endgroup
    covergroup cg_cross_id;
       my_cg_id: cross a, b iff (!rst);
@@ -140,7 +150,7 @@ module t (/*AUTOARG*/
          bins bin_nd = ! binsof(a) intersect { b };
 
          bins bin_e = with (a);
-         bins bin_e = ! with (a);
+         bins bin_not_e = ! with (a);
 
          bins bin_par = (binsof(a));
          bins bin_and = binsof(a) && binsof(b);
@@ -148,8 +158,33 @@ module t (/*AUTOARG*/
       }
    endgroup
 
-   covergroup cg_more extends cg_empty;
+   covergroup cgArgs(int cg_lim);
    endgroup
+
+   class CgCls;
+      int m_x;
+      int m_y;
+      int m_z;
+      covergroup cov1 @m_z;
+         coverpoint m_x;
+         coverpoint m_y;
+      endgroup
+`ifndef T_COVERGROUP_UNSUP_IGN
+      function new(); cov1 = new; endfunction
+`endif
+   endclass
+
+   class CgEmb;
+      covergroup extends cg_empty;
+      endgroup
+   endclass
+
+   initial begin
+      cg_empty cov1 = new;
+`ifndef T_COVERGROUP_UNSUP_IGN
+      cgArgs cov2 = new(2);
+`endif
+   end
 
    always @(posedge clk) begin
       if (cyc == 10) begin

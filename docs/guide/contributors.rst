@@ -13,8 +13,8 @@ When possible, please instead report bugs at `Verilator Issues
 
 The primary author is Wilson Snyder <wsnyder@wsnyder.org>.
 
-Major concepts by Paul Wasson, Duane Galbi, John Coiner, Geza Lore, Yutetsu
-Takatsukasa, and Jie Xu.
+Major concepts by Krzysztof Bieganski, John Coiner, Duane Galbi, Geza Lore,
+Ryszard Rozak, Yutetsu Takatsukasa, Paul Wasson, and Jie Xu.
 
 
 Contributors
@@ -23,8 +23,8 @@ Contributors
 Many people have provided ideas and other assistance with Verilator.
 
 Verilator is receiving significant development support from the `CHIPS
-Alliance <https://chipsalliance.org>`_, `Antmicro Ltd
-<https://antmicro.com>`_ and `Shunyao CAD <https://shunyaocad.com>`_.
+Alliance <https://chipsalliance.org>`_, and `Antmicro Ltd
+<https://antmicro.com>`_.
 
 Previous major corporate sponsors of Verilator, by providing significant
 contributions of time or funds include: Antmicro Ltd., Atmel Corporation,

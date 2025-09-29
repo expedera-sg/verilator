@@ -81,8 +81,9 @@ public:
     ForkDynScopeInstance& createInstancePrototype() {
         UASSERT_OBJ(!m_instance.initialized(), m_procp, "Dynamic scope already instantiated.");
 
-        m_instance.m_classp = new AstClass{m_procp->fileline(), generateDynScopeClassName()};
-        UINFO(9, "new dynscope class " << m_instance.m_classp << endl);
+        m_instance.m_classp
+            = new AstClass{m_procp->fileline(), generateDynScopeClassName(), m_modp->libname()};
+        UINFO(9, "new dynscope class " << m_instance.m_classp);
         m_instance.m_refDTypep
             = new AstClassRefDType{m_procp->fileline(), m_instance.m_classp, nullptr};
         v3Global.rootp()->typeTablep()->addTypesp(m_instance.m_refDTypep);
@@ -90,8 +91,8 @@ public:
             = new AstVar{m_procp->fileline(), VVarType::BLOCKTEMP,
                          generateDynScopeHandleName(m_procp), m_instance.m_refDTypep};
         m_instance.m_handlep->funcLocal(true);
-        m_instance.m_handlep->lifetime(VLifetime::AUTOMATIC);
-        UINFO(9, "new dynscope var " << m_instance.m_handlep << endl);
+        m_instance.m_handlep->lifetime(VLifetime::AUTOMATIC_EXPLICIT);
+        UINFO(9, "new dynscope var " << m_instance.m_handlep);
 
         return m_instance;
     }
@@ -117,9 +118,9 @@ public:
             }
             varp->funcLocal(false);
             varp->varType(VVarType::MEMBER);
-            varp->lifetime(VLifetime::AUTOMATIC);
+            varp->lifetime(VLifetime::AUTOMATIC_EXPLICIT);
             varp->usedLoopIdx(false);  // No longer unrollable
-            UINFO(9, "insert DynScope member " << varp << endl);
+            UINFO(9, "insert DynScope member " << varp);
             m_instance.m_classp->addStmtsp(varp);
         }
 
@@ -230,7 +231,7 @@ private:
         AstBegin* const beginp = new AstBegin{
             forkp->fileline(),
             "_Vwrapped_" + (forkp->name().empty() ? "" : forkp->name() + "_") + cvtToStr(m_id),
-            m_instance.m_handlep, false, true};
+            m_instance.m_handlep, true};
         forkHandle.relink(beginp);
 
         AstNode* const instAsgnp = instantiateDynScope(memberMap);
@@ -285,6 +286,7 @@ class DynScopeVisitor final : public VNVisitor {
     const VNUser2InUse m_inuser2;
 
     // STATE
+    bool m_inFunc = false;  // True if in a function
     AstNodeModule* m_modp = nullptr;  // Module we are currently under
     AstNode* m_procp = nullptr;  // Function/task/block we are currently under
     std::deque<AstNode*> m_frameOrder;  // Ordered list of frames (for determinism)
@@ -366,6 +368,8 @@ class DynScopeVisitor final : public VNVisitor {
     void visit(AstNodeFTask* nodep) override {
         VL_RESTORER(m_procp);
         m_procp = nodep;
+        VL_RESTORER(m_inFunc);
+        m_inFunc = VN_IS(nodep, Func);
         if (hasAsyncFork(nodep)) pushDynScopeFrame(m_procp);
         iterateChildren(nodep);
     }
@@ -432,12 +436,20 @@ class DynScopeVisitor final : public VNVisitor {
             if (!isEvent && m_afterTimingControl && nodep->varp()->isWritable()
                 && nodep->access().isWriteOrRW()) {
                 // The output variable may not exist after a delay, so we can't just write to it
-                nodep->v3warn(
-                    E_UNSUPPORTED,
-                    "Unsupported: Writing to a captured "
-                        << (nodep->varp()->isInout() ? "inout" : "output") << " variable in a "
-                        << (VN_IS(nodep->backp(), AssignDly) ? "non-blocking assignment" : "fork")
-                        << " after a timing control");
+                if (m_inFunc) {
+                    nodep->v3error(
+                        "Writing to an "
+                        << nodep->varp()->verilogKwd()
+                        << " variable of a function after a timing control is not allowed");
+                } else {
+                    nodep->v3warn(E_UNSUPPORTED, "Unsupported: Writing to a captured "
+                                                     << nodep->varp()->verilogKwd()
+                                                     << " variable in a "
+                                                     << (VN_IS(nodep->backp(), AssignDly)
+                                                             ? "non-blocking assignment"
+                                                             : "fork")
+                                                     << " after a timing control");
+                }
             }
             if (!framep->instance().initialized()) framep->createInstancePrototype();
             framep->captureVarInsert(nodep->varp());
@@ -458,11 +470,12 @@ class DynScopeVisitor final : public VNVisitor {
                 })) {
             nodep->user2(true);
             // Put it in a fork to prevent lifetime issues with the local
-            AstFork* const forkp = new AstFork{nodep->fileline(), "", nullptr};
+            AstBegin* const beginp = new AstBegin{nodep->fileline(), "", nullptr, false};
+            AstFork* const forkp = new AstFork{nodep->fileline(), "", beginp};
             forkp->joinType(VJoinType::JOIN_NONE);
             nodep->replaceWith(forkp);
-            forkp->addStmtsp(nodep);
-            UINFO(9, "assign new fork " << forkp << endl);
+            beginp->addStmtsp(nodep);
+            UINFO(9, "assign new fork " << forkp);
         } else {
             visit(static_cast<AstNodeStmt*>(nodep));
         }
@@ -481,7 +494,7 @@ public:
         // Commit changes to AST
         bool typesAdded = false;
         for (auto orderp : m_frameOrder) {
-            UINFO(9, "Frame commit " << orderp << endl);
+            UINFO(9, "Frame commit " << orderp);
             auto frameIt = m_frames.find(orderp);
             UASSERT_OBJ(frameIt != m_frames.end(), orderp, "m_frames didn't contain m_frameOrder");
             ForkDynScopeFrame* framep = frameIt->second;
@@ -536,8 +549,8 @@ class ForkVisitor final : public VNVisitor {
             varp = new AstVar{refp->fileline(), VVarType::BLOCKTEMP, refp->name(), refp->dtypep()};
             varp->direction(VDirection::INPUT);
             varp->funcLocal(true);
-            varp->lifetime(VLifetime::AUTOMATIC);
-            UINFO(9, "new capture var " << varp << endl);
+            varp->lifetime(VLifetime::AUTOMATIC_EXPLICIT);
+            UINFO(9, "new capture var " << varp);
             m_capturedVarsp = AstNode::addNext(m_capturedVarsp, varp);
             // Use the original ref as an argument for call
             m_capturedVarRefsp
@@ -547,7 +560,7 @@ class ForkVisitor final : public VNVisitor {
         return varp;
     }
 
-    AstTask* makeTask(FileLine* fl, AstNode* stmtsp, string name) {
+    AstTask* makeTask(FileLine* fl, AstNode* stmtsp, const std::string& name) {
         stmtsp = AstNode::addNext(static_cast<AstNode*>(m_capturedVarsp), stmtsp);
         AstTask* const taskp = new AstTask{fl, name, stmtsp};
         return taskp;
@@ -562,7 +575,7 @@ class ForkVisitor final : public VNVisitor {
         if (!m_newProcess || nodep->user1()) {
             VL_RESTORER(m_forkDepth);
             if (nodep->user1()) {
-                UASSERT(m_forkDepth > 0, "Wrong fork depth!");
+                UASSERT_OBJ(m_forkDepth > 0, nodep, "Wrong fork depth");
                 --m_forkDepth;
             }
             iterateChildren(nodep);
@@ -588,7 +601,7 @@ class ForkVisitor final : public VNVisitor {
         AstTask* taskp = nullptr;
 
         if (AstBegin* const beginp = VN_CAST(nodep, Begin)) {
-            UASSERT(beginp->stmtsp(), "No stmtsp\n");
+            UASSERT_OBJ(beginp->stmtsp(), beginp, "No stmtsp");
             const string taskName = generateTaskName(beginp, "fork_begin");
             taskp
                 = makeTask(beginp->fileline(), beginp->stmtsp()->unlinkFrBackWithNext(), taskName);
@@ -603,7 +616,11 @@ class ForkVisitor final : public VNVisitor {
         }
 
         m_modp->addStmtsp(taskp);
-        UINFO(9, "new " << taskp << endl);
+        UINFO(9, "new " << taskp);
+
+        // We created a task from fork, so make sure that all
+        // local (to this new task) variables are marked as funcLocal
+        for (AstVar* const localp : m_forkLocalsp) localp->funcLocal(true);
 
         AstTaskRef* const taskrefp = new AstTaskRef{nodep->fileline(), taskp, m_capturedVarRefsp};
         AstStmtExpr* const taskcallp = taskrefp->makeStmt();
@@ -619,7 +636,7 @@ class ForkVisitor final : public VNVisitor {
 
         VL_RESTORER(m_forkLocalsp);
         VL_RESTORER(m_newProcess);
-        VL_RESTORER(m_forkDepth)
+        VL_RESTORER(m_forkDepth);
         if (!nodep->joinType().join()) {
             ++m_forkDepth;
             m_newProcess = true;
@@ -681,7 +698,7 @@ class ForkVisitor final : public VNVisitor {
         iterateChildren(nodep);
     }
     void visit(AstNode* nodep) override {
-        VL_RESTORER(m_newProcess)
+        VL_RESTORER(m_newProcess);
         VL_RESTORER(m_forkDepth);
         if (nodep->user1()) --m_forkDepth;
         m_newProcess = false;
@@ -698,13 +715,13 @@ public:
 // Fork class functions
 
 void V3Fork::makeDynamicScopes(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { DynScopeVisitor{nodep}; }
     V3Global::dumpCheckGlobalTree("fork_dynscope", 0, dumpTreeEitherLevel() >= 3);
 }
 
 void V3Fork::makeTasks(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { ForkVisitor{nodep}; }
     V3Global::dumpCheckGlobalTree("fork", 0, dumpTreeEitherLevel() >= 3);
 }

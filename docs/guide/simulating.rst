@@ -76,16 +76,19 @@ Benchmarking & Optimization
 For best performance, run Verilator with the :vlopt:`-O3`
 :vlopt:`--x-assign fast <--x-assign>`
 :vlopt:`--x-initial fast <--x-initial>`
-:vlopt:`--noassert <--assert>` options.  The :vlopt:`-O3`
+:vlopt:`--no-assert` options.  The :vlopt:`-O3`
 option will require a longer time to run Verilator, and
 :vlopt:`--x-assign fast <--x-assign>`
 :vlopt:`--x-initial fast <--x-assign>`
-may increase the risk of reset bugs in trade for performance; see the above
-documentation for these options.
+may increase the risk of reset bugs in trade for performance.  The
+:vlopt:`--no-assert` will suppress checking assertions, which is faster and
+appropriate for known-good models running software, but may hide design
+errors.  See the above documentation for these options.
 
-If using Verilated multithreaded, use ``numactl`` to ensure you use
-non-conflicting hardware resources. See :ref:`Multithreading`. Also,
-consider using profile-guided optimization; see :ref:`Thread PGO`.
+If using Verilated multithreaded, consider overriding Verilator's default
+thread-to-processor assignment by using ``numactl``; see
+:ref:`Multithreading`. Also, consider using profile-guided optimization;
+see :ref:`Thread PGO`.
 
 Minor Verilog code changes can also give big wins.  You should not have any
 :option:`UNOPTFLAT` warnings from Verilator.  Fixing these warnings can
@@ -202,9 +205,6 @@ With :vlopt:`--coverage` or :vlopt:`--coverage-user`, Verilator will
 translate functional coverage points the user has inserted manually in
 SystemVerilog code through into the Verilated model.
 
-Currently, all functional coverage points are specified using SystemVerilog
-assertion syntax, which must be separately enabled with :vlopt:`--assert`.
-
 For example, the following SystemVerilog statement will add a coverage
 point under the coverage name "DefaultClock":
 
@@ -314,7 +314,7 @@ Suppressing Coverage
 Using :option:`/*verilator&32;coverage_off*/` and
 :option:`/*verilator&32;coverage_on*/` around a block of code will disable
 and enable coverage respectively around that block. Or, use the
-:option:`coverage_block_off` configuration file option.
+:option:`coverage_block_off` control file option.
 
 Verilator automatically disables coverage of lines and branches with a
 $stop in them, as it is assumed that $stop branches contain an error check

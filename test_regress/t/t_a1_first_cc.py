@@ -15,6 +15,8 @@ import vltest_bootstrap
 
 test.scenarios('vlt')
 
+test.leak_check_disable()
+
 DEBUG_QUIET = "--debug --debugi 0 --gdbbt --no-dump-tree"
 
 test.run(
@@ -26,7 +28,7 @@ test.run(
     ],
     verilator_run=True)
 
-test.compile(verilator_flags2=[DEBUG_QUIET, "--trace"])
+test.compile(verilator_flags2=[DEBUG_QUIET, "--trace-vcd"])
 
 test.execute()
 

@@ -80,7 +80,7 @@ std::vector<const AstSenTree*> getSenTreesUsedBy(const std::vector<const LogicBy
     for (const LogicByScope* const lbsp : lbsps) {
         for (const auto& pair : *lbsp) {
             AstActive* const activep = pair.second;
-            AstSenTree* const senTreep = activep->sensesp();
+            AstSenTree* const senTreep = activep->sentreep();
             if (senTreep->user1SetOnce()) continue;
             if (senTreep->hasClocked() || senTreep->hasHybrid()) result.push_back(senTreep);
         }
@@ -89,12 +89,12 @@ std::vector<const AstSenTree*> getSenTreesUsedBy(const std::vector<const LogicBy
 }
 
 void remapSensitivities(const LogicByScope& lbs,
-                        std::unordered_map<const AstSenTree*, AstSenTree*> senTreeMap) {
+                        const std::unordered_map<const AstSenTree*, AstSenTree*>& senTreeMap) {
     for (const auto& pair : lbs) {
         AstActive* const activep = pair.second;
-        AstSenTree* const senTreep = activep->sensesp();
+        AstSenTree* const senTreep = activep->sentreep();
         if (senTreep->hasCombo()) continue;
-        activep->sensesp(senTreeMap.at(senTreep));
+        activep->sentreep(senTreeMap.at(senTreep));
     }
 }
 
@@ -102,6 +102,22 @@ void invertAndMergeSenTreeMap(
     V3Order::TrigToSenMap& result,
     const std::unordered_map<const AstSenTree*, AstSenTree*>& senTreeMap) {
     for (const auto& pair : senTreeMap) result.emplace(pair.second, pair.first);
+}
+
+std::vector<AstSenTree*>
+findTriggeredIface(const AstVarScope* vscp, const VirtIfaceTriggers::IfaceSensMap& vifTrigged,
+                   const VirtIfaceTriggers::IfaceMemberSensMap& vifMemberTriggered) {
+    UASSERT_OBJ(vscp->varp()->sensIfacep(), vscp, "Not an virtual interface trigger");
+    std::vector<AstSenTree*> result;
+    const auto ifaceIt = vifTrigged.find(vscp->varp()->sensIfacep());
+    if (ifaceIt != vifTrigged.end()) result.push_back(ifaceIt->second);
+    for (const auto& memberIt : vifMemberTriggered) {
+        if (vscp->varp()->sensIfacep() == memberIt.first.m_ifacep) {
+            result.push_back(memberIt.second);
+        }
+    }
+    if (result.empty()) vscp->v3fatalSrc("Did not find virtual interface trigger");
+    return result;
 }
 
 //============================================================================
@@ -160,11 +176,11 @@ AstNodeStmt* checkIterationLimit(AstNetlist* netlistp, const string& name, AstVa
 AstNodeStmt* profExecSectionPush(FileLine* flp, const string& section) {
     const string name
         = (v3Global.opt.hierChild() ? (v3Global.opt.topModule() + " ") : "") + section;
-    return new AstCStmt{flp, "VL_EXEC_TRACE_ADD_RECORD(vlSymsp).sectionPush(\"" + name + "\");\n"};
+    return new AstCStmt{flp, "VL_EXEC_TRACE_ADD_RECORD(vlSymsp).sectionPush(\"" + name + "\");"};
 }
 
 AstNodeStmt* profExecSectionPop(FileLine* flp) {
-    return new AstCStmt{flp, "VL_EXEC_TRACE_ADD_RECORD(vlSymsp).sectionPop();\n"};
+    return new AstCStmt{flp, "VL_EXEC_TRACE_ADD_RECORD(vlSymsp).sectionPop();"};
 }
 
 struct EvalLoop final {
@@ -205,8 +221,8 @@ EvalLoop createEvalLoop(
         phaseFuncp->addStmtsp(phasePrepp);
 
         // Check if any triggers are fired, save the result
-        AstCMethodHard* const callp
-            = new AstCMethodHard{flp, new AstVarRef{flp, trigp, VAccess::READ}, "any"};
+        AstCMethodHard* const callp = new AstCMethodHard{
+            flp, new AstVarRef{flp, trigp, VAccess::READ}, VCMethod::TRIGGER_ANY};
         callp->dtypeSetBit();
         phaseFuncp->addStmtsp(
             new AstAssign{flp, new AstVarRef{flp, executeFlagp, VAccess::WRITE}, callp});
@@ -329,7 +345,7 @@ void splitCheck(AstCFunc* ofuncp) {
 
     // Unlink all statements, then add item by item to new sub-functions
     AstBegin* const tempp = new AstBegin{ofuncp->fileline(), "[EditWrapper]",
-                                         ofuncp->stmtsp()->unlinkFrBackWithNext()};
+                                         ofuncp->stmtsp()->unlinkFrBackWithNext(), false};
     // Currently we do not use finalsp in V3Sched, if we do, it needs to be handled here
     UASSERT_OBJ(!ofuncp->finalsp(), ofuncp, "Should not have any finalps");
     while (tempp->stmtsp()) {
@@ -357,7 +373,7 @@ LogicClasses gatherLogicClasses(AstNetlist* netlistp) {
 
     netlistp->foreach([&](AstScope* scopep) {
         scopep->foreach([&](AstActive* activep) {
-            AstSenTree* const senTreep = activep->sensesp();
+            AstSenTree* const senTreep = activep->sentreep();
             if (senTreep->hasStatic()) {
                 UASSERT_OBJ(!senTreep->sensesp()->nextp(), activep,
                             "static initializer with additional sensitivities");
@@ -435,8 +451,14 @@ void orderSequentially(AstCFunc* funcp, const LogicByScope& lbs) {
                         if (VN_IS(procp, Always)) {
                             subFuncp->slow(false);
                             FileLine* const flp = procp->fileline();
-                            bodyp
-                                = new AstWhile{flp, new AstConst{flp, AstConst::BitTrue{}}, bodyp};
+                            bodyp = new AstWhile{
+                                flp,
+                                // If we change to use exceptions to handle finish/stop,
+                                // this can get removed
+                                new AstCExpr{flp,
+                                             "VL_LIKELY(!vlSymsp->_vm_contextp__->gotFinish())", 1,
+                                             true},
+                                bodyp};
                         }
                     }
                     subFuncp->addStmtsp(bodyp);
@@ -501,7 +523,7 @@ struct TriggerKit final {
     void addFirstIterationTriggerAssignment(AstVarScope* flagp, uint32_t index) const {
         FileLine* const flp = flagp->fileline();
         AstVarRef* const vrefp = new AstVarRef{flp, m_vscp, VAccess::WRITE};
-        AstCMethodHard* const callp = new AstCMethodHard{flp, vrefp, "setBit"};
+        AstCMethodHard* const callp = new AstCMethodHard{flp, vrefp, VCMethod::TRIGGER_SET_BIT};
         callp->addPinsp(new AstConst{flp, index});
         callp->addPinsp(new AstVarRef{flp, flagp, VAccess::READ});
         callp->dtypeSetVoid();
@@ -512,7 +534,7 @@ struct TriggerKit final {
     void addExtraTriggerAssignment(AstVarScope* extraTriggerVscp, uint32_t index) const {
         FileLine* const flp = extraTriggerVscp->fileline();
         AstVarRef* const vrefp = new AstVarRef{flp, m_vscp, VAccess::WRITE};
-        AstCMethodHard* const callp = new AstCMethodHard{flp, vrefp, "setBit"};
+        AstCMethodHard* const callp = new AstCMethodHard{flp, vrefp, VCMethod::TRIGGER_SET_BIT};
         callp->addPinsp(new AstConst{flp, index});
         callp->addPinsp(new AstVarRef{flp, extraTriggerVscp, VAccess::READ});
         callp->dtypeSetVoid();
@@ -548,7 +570,7 @@ AstSenTree* createTriggerSenTree(AstNetlist* netlistp, AstVarScope* const vscp, 
     const uint32_t wordIndex = index / 64;
     const uint32_t bitIndex = index % 64;
     AstCMethodHard* const callp
-        = new AstCMethodHard{flp, vrefp, "word", new AstConst{flp, wordIndex}};
+        = new AstCMethodHard{flp, vrefp, VCMethod::TRIGGER_WORD, new AstConst{flp, wordIndex}};
     callp->dtypeSetUInt64();
     AstNodeExpr* const termp
         = new AstAnd{flp, new AstConst{flp, AstConst::Unsized64{}, 1ULL << bitIndex}, callp};
@@ -641,19 +663,18 @@ const TriggerKit createTriggers(AstNetlist* netlistp, AstCFunc* const initFuncp,
 
     // Add a print to the dumping function if there are no triggers pending
     {
-        AstCMethodHard* const callp
-            = new AstCMethodHard{flp, new AstVarRef{flp, vscp, VAccess::READ}, "any"};
+        AstCMethodHard* const callp = new AstCMethodHard{
+            flp, new AstVarRef{flp, vscp, VAccess::READ}, VCMethod::TRIGGER_ANY};
         callp->dtypeSetBit();
         AstIf* const ifp = new AstIf{flp, callp};
         dumpp->addStmtsp(ifp);
-        ifp->addElsesp(
-            new AstText{flp, "VL_DBG_MSGF(\"         No triggers active\\n\");\n", true});
+        ifp->addElsesp(new AstCStmt{flp, "VL_DBG_MSGF(\"         No triggers active\\n\");"});
     }
 
     // Set the given trigger to the given value
     const auto setTrigBit = [&](uint32_t index, AstNodeExpr* valp) {
         AstVarRef* const vrefp = new AstVarRef{flp, vscp, VAccess::WRITE};
-        AstCMethodHard* const callp = new AstCMethodHard{flp, vrefp, "setBit"};
+        AstCMethodHard* const callp = new AstCMethodHard{flp, vrefp, VCMethod::TRIGGER_SET_BIT};
         callp->addPinsp(new AstConst{flp, index});
         callp->addPinsp(valp);
         callp->dtypeSetVoid();
@@ -666,7 +687,7 @@ const TriggerKit createTriggers(AstNetlist* netlistp, AstCFunc* const initFuncp,
         const uint32_t wordIndex = index / 64;
         const uint32_t bitIndex = index % 64;
         AstCMethodHard* const callp
-            = new AstCMethodHard{flp, vrefp, "word", new AstConst{flp, wordIndex}};
+            = new AstCMethodHard{flp, vrefp, VCMethod::TRIGGER_WORD, new AstConst{flp, wordIndex}};
         callp->dtypeSetUInt64();
         AstNodeExpr* const termp
             = new AstAnd{flp, new AstConst{flp, AstConst::Unsized64{}, 1ULL << bitIndex}, callp};
@@ -724,7 +745,9 @@ const TriggerKit createTriggers(AstNetlist* netlistp, AstCFunc* const initFuncp,
         ss << "@(";
         V3EmitV::verilogForTree(senItemp, ss);
         ss << ")";
-        addDebug(triggerNumber, ss.str());
+        std::string desc = VString::quoteBackslash(ss.str());
+        desc = VString::replaceSubstr(desc, "\n", "\\n");
+        addDebug(triggerNumber, desc);
 
         //
         ++triggerNumber;
@@ -753,7 +776,8 @@ const TriggerKit createTriggers(AstNetlist* netlistp, AstCFunc* const initFuncp,
                 }
                 // Set the whole word in the trigger vector
                 AstVarRef* const vrefp = new AstVarRef{flp, vscp, VAccess::WRITE};
-                AstCMethodHard* const callp = new AstCMethodHard{flp, vrefp, "setWord"};
+                AstCMethodHard* const callp
+                    = new AstCMethodHard{flp, vrefp, VCMethod::TRIGGER_SET_WORD};
                 callp->addPinsp(new AstConst{flp, triggerBitIdx / TRIG_VEC_WORD_SIZE});
                 callp->addPinsp(trigExprps[0]);
                 callp->dtypeSetVoid();
@@ -949,23 +973,26 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
     AstSenTree* const dpiExportTriggered
         = dpiExportTriggerVscp ? createTriggerSenTree(netlistp, trig.m_vscp, dpiExportTriggerIndex)
                                : nullptr;
-    const auto& vifTriggered
+    const auto& vifTriggeredIco
         = virtIfaceTriggers.makeIfaceToSensMap(netlistp, firstVifTriggerIndex, trig.m_vscp);
+    const auto& vifMemberTriggeredIco
+        = virtIfaceTriggers.makeMemberToSensMap(netlistp, firstVifTriggerIndex, trig.m_vscp);
 
     // Create and Order the body function
-    AstCFunc* const icoFuncp
-        = V3Order::order(netlistp, {&logic}, trigToSen, "ico", false, false,
-                         [=](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
-                             AstVar* const varp = vscp->varp();
-                             if (varp->isPrimaryInish() || varp->isSigUserRWPublic()) {
-                                 out.push_back(inputChanged);
-                             }
-                             if (varp->isWrittenByDpi()) out.push_back(dpiExportTriggered);
-                             if (vscp->varp()->sensIfacep()) {
-                                 const auto it = vifTriggered.find(vscp->varp()->sensIfacep());
-                                 if (it != vifTriggered.end()) out.push_back(it->second);
-                             }
-                         });
+    AstCFunc* const icoFuncp = V3Order::order(
+        netlistp, {&logic}, trigToSen, "ico", false, false,
+        [=](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
+            AstVar* const varp = vscp->varp();
+            if (varp->isPrimaryInish() || varp->isSigUserRWPublic()) {
+                out.push_back(inputChanged);
+            }
+            if (varp->isWrittenByDpi()) out.push_back(dpiExportTriggered);
+            if (vscp->varp()->sensIfacep()) {
+                std::vector<AstSenTree*> ifaceTriggered
+                    = findTriggeredIface(vscp, vifTriggeredIco, vifMemberTriggeredIco);
+                out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
+            }
+        });
     splitCheck(icoFuncp);
 
     // Create the eval loop
@@ -989,7 +1016,7 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
 
 AstStmtExpr* createTriggerClearCall(FileLine* const flp, AstVarScope* const vscp) {  // Trigger
     AstVarRef* const refp = new AstVarRef{flp, vscp, VAccess::WRITE};
-    AstCMethodHard* const callp = new AstCMethodHard{flp, refp, "clear"};
+    AstCMethodHard* const callp = new AstCMethodHard{flp, refp, VCMethod::TRIGGER_CLEAR};
     callp->dtypeSetVoid();
     return callp->makeStmt();
 }
@@ -998,7 +1025,7 @@ AstStmtExpr* createTriggerSetCall(FileLine* const flp, AstVarScope* const toVscp
                                   AstVarScope* const fromVscp) {
     AstVarRef* const lhsp = new AstVarRef{flp, toVscp, VAccess::WRITE};
     AstVarRef* const argp = new AstVarRef{flp, fromVscp, VAccess::READ};
-    AstCMethodHard* const callp = new AstCMethodHard{flp, lhsp, "thisOr", argp};
+    AstCMethodHard* const callp = new AstCMethodHard{flp, lhsp, VCMethod::TRIGGER_THIS_OR, argp};
     callp->dtypeSetVoid();
     return callp->makeStmt();
 }
@@ -1009,7 +1036,7 @@ AstStmtExpr* createTriggerAndNotCall(FileLine* const flp, AstVarScope* const lhs
     AstVarRef* const opap = new AstVarRef{flp, aVscp, VAccess::READ};
     AstVarRef* const opbp = new AstVarRef{flp, bVscp, VAccess::READ};
     opap->addNext(opbp);
-    AstCMethodHard* const callp = new AstCMethodHard{flp, lhsp, "andNot", opap};
+    AstCMethodHard* const callp = new AstCMethodHard{flp, lhsp, VCMethod::TRIGGER_AND_NOT, opap};
     callp->dtypeSetVoid();
     return callp->makeStmt();
 }
@@ -1099,8 +1126,8 @@ void createEval(AstNetlist* netlistp,  //
             AstIf* const ifp = new AstIf{flp, new AstVarRef{flp, nbaEventTriggerp, VAccess::READ}};
             ifp->addThensp(setVar(continuep, 1));
             ifp->addThensp(setVar(nbaEventTriggerp, 0));
-            AstCMethodHard* const firep
-                = new AstCMethodHard{flp, new AstVarRef{flp, nbaEventp, VAccess::WRITE}, "fire"};
+            AstCMethodHard* const firep = new AstCMethodHard{
+                flp, new AstVarRef{flp, nbaEventp, VAccess::WRITE}, VCMethod::EVENT_FIRE};
             firep->dtypeSetVoid();
             ifp->addThensp(firep->makeStmt());
             return ifp;
@@ -1181,6 +1208,18 @@ VirtIfaceTriggers::makeIfaceToSensMap(AstNetlist* const netlistp, size_t vifTrig
         ++vifTriggerIndex;
     }
     return ifaceToSensMap;
+}
+
+VirtIfaceTriggers::IfaceMemberSensMap
+VirtIfaceTriggers::makeMemberToSensMap(AstNetlist* const netlistp, size_t vifTriggerIndex,
+                                       AstVarScope* trigVscp) const {
+    IfaceMemberSensMap memberToSensMap;
+    for (const auto& p : m_memberTriggers) {
+        memberToSensMap.emplace(
+            std::make_pair(p.first, createTriggerSenTree(netlistp, trigVscp, vifTriggerIndex)));
+        ++vifTriggerIndex;
+    }
+    return memberToSensMap;
 }
 
 //============================================================================
@@ -1353,6 +1392,8 @@ void schedule(AstNetlist* netlistp) {
 
     const auto& vifTriggeredAct
         = virtIfaceTriggers.makeIfaceToSensMap(netlistp, firstVifTriggerIndex, actTrig.m_vscp);
+    const auto& vifMemberTriggeredAct
+        = virtIfaceTriggers.makeMemberToSensMap(netlistp, firstVifTriggerIndex, actTrig.m_vscp);
 
     AstCFunc* const actFuncp = V3Order::order(
         netlistp, {&logicRegions.m_pre, &logicRegions.m_act, &logicReplicas.m_act}, trigToSenAct,
@@ -1361,8 +1402,9 @@ void schedule(AstNetlist* netlistp) {
             if (it != actTimingDomains.end()) out = it->second;
             if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggeredAct);
             if (vscp->varp()->sensIfacep()) {
-                const auto sit = vifTriggeredAct.find(vscp->varp()->sensIfacep());
-                if (sit != vifTriggeredAct.end()) out.push_back(sit->second);
+                std::vector<AstSenTree*> ifaceTriggered
+                    = findTriggeredIface(vscp, vifTriggeredAct, vifMemberTriggeredAct);
+                out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
             }
         });
     splitCheck(actFuncp);
@@ -1373,7 +1415,7 @@ void schedule(AstNetlist* netlistp) {
     // Orders a region's logic and creates the region eval function
     const auto order = [&](const std::string& name,
                            const std::vector<V3Sched::LogicByScope*>& logic) -> EvalKit {
-        UINFO(2, "Scheduling " << name << " #logic = " << logic.size() << endl);
+        UINFO(2, "Scheduling " << name << " #logic = " << logic.size());
         AstVarScope* const trigVscp
             = scopeTopp->createTempLike("__V" + name + "Triggered", actTrigVscp);
         const auto trigMap = cloneMapWithNewTriggerReferences(actTrigMap, trigVscp);
@@ -1390,6 +1432,8 @@ void schedule(AstNetlist* netlistp) {
                   : nullptr;
         const auto& vifTriggered
             = virtIfaceTriggers.makeIfaceToSensMap(netlistp, firstVifTriggerIndex, trigVscp);
+        const auto& vifMemberTriggered
+            = virtIfaceTriggers.makeMemberToSensMap(netlistp, firstVifTriggerIndex, trigVscp);
 
         const auto& timingDomains = timingKit.remapDomains(trigMap);
         AstCFunc* const funcp = V3Order::order(
@@ -1399,8 +1443,9 @@ void schedule(AstNetlist* netlistp) {
                 if (it != timingDomains.end()) out = it->second;
                 if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggered);
                 if (vscp->varp()->sensIfacep()) {
-                    const auto sit = vifTriggered.find(vscp->varp()->sensIfacep());
-                    if (sit != vifTriggered.end()) out.push_back(sit->second);
+                    std::vector<AstSenTree*> ifaceTriggered
+                        = findTriggeredIface(vscp, vifTriggered, vifMemberTriggered);
+                    out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
                 }
             });
 

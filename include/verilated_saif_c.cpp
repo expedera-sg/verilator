@@ -15,9 +15,9 @@
 /// \brief Verilated C++ tracing in SAIF format implementation code
 ///
 /// This file must be compiled and linked against all Verilated objects
-/// that use --trace.
+/// that use --trace-saif.
 ///
-/// Use "verilator --trace" to add this to the Makefile for the linker.
+/// Use "verilator --trace-saif" to add this to the Makefile for the linker.
 ///
 //=============================================================================
 
@@ -110,7 +110,7 @@ public:
                       "The emitted value must be of integral type");
 
         const uint64_t dt = time - m_lastTime;
-        for (size_t i = 0; i < std::min(m_width, bits); i++) {
+        for (size_t i = 0; i < std::min(m_width, bits); ++i) {
             m_bits[i].aggregateVal(dt, (newval >> i) & 1);
         }
         updateLastTime(time);
@@ -319,6 +319,7 @@ void VerilatedSaif::close() VL_MT_SAFE_EXCLUDES(m_mutex) {
     finalizeSaifFileContents();
     clearCurrentlyCollectedData();
 
+    writeBuffered(true);
     ::close(m_filep);
     m_isOpen = false;
 
@@ -400,11 +401,6 @@ bool VerilatedSaif::printActivityStats(VerilatedSaifActivityVar& activity,
     for (size_t i = 0; i < activity.width(); ++i) {
         VerilatedSaifActivityBit& bit = activity.bit(i);
 
-        if (bit.toggleCount() <= 0) {
-            // Skip bits with no toggles
-            continue;
-        }
-
         bit.aggregateVal(currentTime() - activity.lastUpdateTime(), bit.bitValue());
 
         if (!anyNetWritten) {
@@ -442,9 +438,25 @@ void VerilatedSaif::clearCurrentlyCollectedData() {
     m_activityAccumulators.clear();
 }
 
-void VerilatedSaif::printStr(const char* str) { ::write(m_filep, str, strlen(str)); }
+void VerilatedSaif::printStr(const char* str) {
+    m_buffer.append(str);
+    writeBuffered(false);
+}
 
-void VerilatedSaif::printStr(const std::string& str) { ::write(m_filep, str.c_str(), str.size()); }
+void VerilatedSaif::printStr(const std::string& str) {
+    m_buffer.append(str);
+    writeBuffered(false);
+}
+
+void VerilatedSaif::writeBuffered(bool force) {
+    if (VL_UNLIKELY(m_buffer.size() >= WRITE_BUFFER_SIZE || force)) {
+        if (VL_UNLIKELY(!m_buffer.empty())) {
+            ::write(m_filep, m_buffer.data(), m_buffer.size());
+            m_buffer = "";
+            m_buffer.reserve(WRITE_BUFFER_SIZE * 2);
+        }
+    }
+}
 
 //=============================================================================
 // Definitions
@@ -459,22 +471,29 @@ void VerilatedSaif::incrementIndent() { m_indent += 1; }
 void VerilatedSaif::decrementIndent() { m_indent -= 1; }
 
 void VerilatedSaif::printIndent() {
-    for (int i = 0; i < m_indent; ++i) printStr(" ");
+    printStr(std::string(m_indent, ' '));  // Must use () constructor
 }
 
 void VerilatedSaif::pushPrefix(const std::string& name, VerilatedTracePrefixType type) {
-    std::string pname = name;
-
-    if (m_prefixStack.back().second == VerilatedTracePrefixType::ROOTIO_MODULE) popPrefix();
-    if (pname.empty()) {
-        pname = "$rootio";
-        type = VerilatedTracePrefixType::ROOTIO_MODULE;
+    assert(!m_prefixStack.empty());  // Constructor makes an empty entry
+    // An empty name means this is the root of a model created with
+    // name()=="".  The tools get upset if we try to pass this as empty, so
+    // we put the signals under a new $rootio scope, but the signals
+    // further down will be peers, not children (as usual for name()!="").
+    const std::string prevPrefix = m_prefixStack.back().first;
+    if (name == "$rootio" && !prevPrefix.empty()) {
+        // Upper has name, we can suppress inserting $rootio, but still push so popPrefix works
+        m_prefixStack.emplace_back(prevPrefix, VerilatedTracePrefixType::ROOTIO_WRAPPER);
+        return;
+    } else if (name.empty()) {
+        m_prefixStack.emplace_back(prevPrefix, VerilatedTracePrefixType::ROOTIO_WRAPPER);
+        return;
     }
 
     if (type != VerilatedTracePrefixType::ARRAY_UNPACKED
         && type != VerilatedTracePrefixType::ARRAY_PACKED) {
 
-        std::string scopePath = m_prefixStack.back().first + pname;
+        std::string scopePath = prevPrefix + name;
         std::string scopeName = lastWord(scopePath);
 
         auto newScope = std::make_unique<VerilatedSaifActivityScope>(
@@ -490,23 +509,22 @@ void VerilatedSaif::pushPrefix(const std::string& name, VerilatedTracePrefixType
         m_currentScope = newScopePtr;
     }
 
-    std::string newPrefix = m_prefixStack.back().first + pname;
-    if (type != VerilatedTracePrefixType::ARRAY_UNPACKED
-        && type != VerilatedTracePrefixType::ARRAY_PACKED) {
-        newPrefix += ' ';
-    }
-
-    m_prefixStack.emplace_back(newPrefix, type);
+    const std::string newPrefix = prevPrefix + name;
+    bool properScope = (type != VerilatedTracePrefixType::ARRAY_UNPACKED
+                        && type != VerilatedTracePrefixType::ARRAY_PACKED
+                        && type != VerilatedTracePrefixType::ROOTIO_WRAPPER);
+    m_prefixStack.emplace_back(newPrefix + (properScope ? " " : ""), type);
 }
 
 void VerilatedSaif::popPrefix() {
     if (m_prefixStack.back().second != VerilatedTracePrefixType::ARRAY_UNPACKED
         && m_prefixStack.back().second != VerilatedTracePrefixType::ARRAY_PACKED
-        && m_currentScope != nullptr) {
+        && m_prefixStack.back().second != VerilatedTracePrefixType::ROOTIO_WRAPPER
+        && m_currentScope) {
         m_currentScope = m_currentScope->parentScope();
     }
-
     m_prefixStack.pop_back();
+    assert(!m_prefixStack.empty());  // Always one left, the constructor's initial one
 }
 
 void VerilatedSaif::declare(const uint32_t code, uint32_t fidx, const char* name,

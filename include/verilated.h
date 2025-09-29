@@ -39,8 +39,8 @@
 #endif
 
 // clang-format off
-#include "verilatedos.h"
 #include "verilated_config.h"
+#include "verilatedos.h"
 #if VM_SC
 # include "verilated_sc.h"  // Get SYSTEMC_VERSION and time declarations
 #endif
@@ -113,6 +113,7 @@ class VerilatedVcdSc;
 //=========================================================================
 // Basic types
 
+// Type letters
 // clang-format off
 //    P                     // Packed data of bit type (C/S/I/Q/W)
 using CData = uint8_t;    ///< Data representing 'bit' of 1-8 packed bits
@@ -124,6 +125,8 @@ using WData = EData;        ///< Data representing >64 packed bits (used as poin
 //    F     = float;        // No typedef needed; Verilator uses float
 //    D     = double;       // No typedef needed; Verilator uses double
 //    N     = std::string;  // No typedef needed; Verilator uses string
+//    U     = VlUnpacked;
+//    R     = VlQueue;
 // clang-format on
 
 using WDataInP = const WData*;  ///< 'bit' of >64 packed bits as array input to a function
@@ -175,9 +178,14 @@ enum class VerilatedAssertDirectiveType : uint8_t {
 using VerilatedAssertType_t = std::underlying_type<VerilatedAssertType>::type;
 using VerilatedAssertDirectiveType_t = std::underlying_type<VerilatedAssertDirectiveType>::type;
 
-// Type trait for custom struct
+// Type trait: whether T is a user-defined custom struct
 template <typename>
 struct VlIsCustomStruct : public std::false_type {};
+
+// Type trait: used to detect if array element is a custom struct (e.g. for struct arrays)
+template <typename T>
+struct VlContainsCustomStruct : VlIsCustomStruct<T> {};
+
 //=============================================================================
 // Utility functions
 
@@ -636,7 +644,7 @@ public:
     }
 
     // Internal: Model and thread setup
-    void addModel(VerilatedModel*);
+    void addModel(const VerilatedModel* modelp);
     VerilatedVirtualBase* threadPoolp();
     void prepareClone();
     VerilatedVirtualBase* threadPoolpOnClone();
@@ -755,8 +763,8 @@ public:  // But internals only - called from VerilatedModule's
 
 class VerilatedHierarchy final {
 public:
-    static void add(VerilatedScope* fromp, VerilatedScope* top);
-    static void remove(VerilatedScope* fromp, VerilatedScope* top);
+    static void add(const VerilatedScope* fromp, const VerilatedScope* top);
+    static void remove(const VerilatedScope* fromp, const VerilatedScope* top);
 };
 
 //===========================================================================

@@ -4,7 +4,7 @@
 // any use, without warranty, 2023 by Wilson Snyder.
 // SPDX-License-Identifier: CC0-1.0
 
-module t(/*AUTOARG*/);
+module t;
 
    typedef union tagged {
      void m_invalid;
@@ -15,9 +15,16 @@ module t(/*AUTOARG*/);
    string s;
 
    initial begin
-      u = tagged m_invalid;
-      s = $sformatf("%p", u);
-      $display("%s e.g. '{tagged m_invalid:void}", s);
+      begin
+         u = tagged m_invalid;
+         s = $sformatf("%p", u);
+         $display("%s e.g. '{tagged m_invalid:void}", s);
+      end
+
+      case (u) matches
+        default: ;
+      endcase
+
       case (u) matches
         tagged m_invalid: ;
         tagged m_int: $stop;

@@ -115,18 +115,18 @@ AstCCall* TimingKit::createCommit(AstNetlist* const netlistp) {
                 m_commitFuncp->declPrivate(true);
                 scopeTopp->addBlocksp(m_commitFuncp);
             }
-            AstSenTree* const sensesp = activep->sensesp();
-            FileLine* const flp = sensesp->fileline();
+            AstSenTree* const sentreep = activep->sentreep();
+            FileLine* const flp = sentreep->fileline();
             // Negate the sensitivity. We will commit only if the event wasn't triggered on the
             // current iteration
-            auto* const negSensesp = sensesp->cloneTree(false);
-            negSensesp->sensesp()->sensp(
-                new AstLogNot{flp, negSensesp->sensesp()->sensp()->unlinkFrBack()});
-            sensesp->addNextHere(negSensesp);
-            auto* const newactp = new AstActive{flp, "", negSensesp};
+            auto* const negSentreep = sentreep->cloneTree(false);
+            negSentreep->sensesp()->sensp(
+                new AstLogNot{flp, negSentreep->sensesp()->sensp()->unlinkFrBack()});
+            sentreep->addNextHere(negSentreep);
+            auto* const newactp = new AstActive{flp, "", negSentreep};
             // Create the commit call and put it in the commit function
             auto* const commitp = new AstCMethodHard{
-                flp, new AstVarRef{flp, schedulerp, VAccess::READWRITE}, "commit"};
+                flp, new AstVarRef{flp, schedulerp, VAccess::READWRITE}, VCMethod::SCHED_COMMIT};
             if (resumep->pinsp()) commitp->addPinsp(resumep->pinsp()->cloneTree(false));
             commitp->dtypeSetVoid();
             newactp->addStmtsp(commitp->makeStmt());
@@ -180,11 +180,11 @@ TimingKit prepareTiming(AstNetlist* const netlistp) {
         void createResumeActive(AstCAwait* const awaitp) {
             auto* const methodp = VN_AS(awaitp->exprp(), CMethodHard);
             AstVarScope* const schedulerp = VN_AS(methodp->fromp(), VarRef)->varScopep();
-            AstSenTree* const sensesp = awaitp->sensesp();
-            FileLine* const flp = sensesp->fileline();
+            AstSenTree* const sentreep = awaitp->sentreep();
+            FileLine* const flp = sentreep->fileline();
             // Create a resume() call on the timing scheduler
             auto* const resumep = new AstCMethodHard{
-                flp, new AstVarRef{flp, schedulerp, VAccess::READWRITE}, "resume"};
+                flp, new AstVarRef{flp, schedulerp, VAccess::READWRITE}, VCMethod::SCHED_RESUME};
             resumep->dtypeSetVoid();
             if (schedulerp->dtypep()->basicp()->isTriggerScheduler()) {
                 UASSERT_OBJ(methodp->pinsp(), methodp,
@@ -197,11 +197,11 @@ TimingKit prepareTiming(AstNetlist* const netlistp) {
                 }
             } else if (schedulerp->dtypep()->basicp()->isDynamicTriggerScheduler()) {
                 auto* const postp = resumep->cloneTree(false);
-                postp->name("doPostUpdates");
+                postp->method(VCMethod::SCHED_DO_POST_UPDATES);
                 m_postUpdatesr = AstNode::addNext(m_postUpdatesr, postp->makeStmt());
             }
             // Put it in an active and put that in the global resume function
-            auto* const activep = new AstActive{flp, "_timing", sensesp};
+            auto* const activep = new AstActive{flp, "_timing", sentreep};
             activep->addStmtsp(resumep->makeStmt());
             m_lbs.emplace_back(m_scopeTopp, activep);
         }
@@ -232,10 +232,10 @@ TimingKit prepareTiming(AstNetlist* const netlistp) {
             iterateChildren(nodep);
         }
         void visit(AstCAwait* nodep) override {
-            if (AstSenTree* const sensesp = nodep->sensesp()) {
-                if (!sensesp->user1SetOnce()) createResumeActive(nodep);
-                nodep->clearSensesp();  // Clear as these sentrees will get deleted later
-                if (m_inProcess) m_processDomains.insert(sensesp);
+            if (AstSenTree* const sentreep = nodep->sentreep()) {
+                if (!sentreep->user1SetOnce()) createResumeActive(nodep);
+                nodep->clearSentreep();  // Clear as these sentrees will get deleted later
+                if (m_inProcess) m_processDomains.insert(sentreep);
             }
         }
         void visit(AstNodeVarRef* nodep) override {
@@ -342,10 +342,11 @@ void transformForks(AstNetlist* const netlistp) {
             m_funcp = nodep;
             m_awaitMoved = false;
             iterateChildren(nodep);
+            // cppcheck-suppress knownConditionTrueFalse
             if (nodep->isCoroutine() && m_awaitMoved
                 && !nodep->stmtsp()->exists([](AstCAwait*) { return true; })) {
                 // co_return at the end (either that or a co_await is required in a coroutine
-                nodep->addStmtsp(new AstCStmt{nodep->fileline(), "co_return;\n"});
+                nodep->addStmtsp(new AstCStmt{nodep->fileline(), "co_return;"});
             }
         }
         void visit(AstVar* nodep) override {
@@ -388,20 +389,20 @@ void transformForks(AstNetlist* const netlistp) {
                 nodep->replaceWith(callp->makeStmt());
                 // If we're in a class, add a vlSymsp arg
                 if (m_inClass) {
-                    newfuncp->addInitsp(new AstCStmt{nodep->fileline(), "VL_KEEP_THIS;\n"});
-                    newfuncp->argTypes(EmitCBase::symClassVar());
+                    newfuncp->addInitsp(new AstCStmt{nodep->fileline(), "VL_KEEP_THIS;"});
+                    newfuncp->argTypes(EmitCUtil::symClassVar());
                     callp->argTypes("vlSymsp");
                 }
                 // Put the begin's statements in the function, delete the begin
                 newfuncp->addStmtsp(nodep->stmtsp()->unlinkFrBackWithNext());
                 if (nodep->needProcess()) {
                     newfuncp->setNeedProcess();
-                    newfuncp->addStmtsp(new AstCStmt{nodep->fileline(),
-                                                     "vlProcess->state(VlProcess::FINISHED);\n"});
+                    newfuncp->addStmtsp(
+                        new AstCStmt{nodep->fileline(), "vlProcess->state(VlProcess::FINISHED);"});
                 }
                 if (!m_beginHasAwaits) {
                     // co_return at the end (either that or a co_await is required in a coroutine
-                    newfuncp->addStmtsp(new AstCStmt{nodep->fileline(), "co_return;\n"});
+                    newfuncp->addStmtsp(new AstCStmt{nodep->fileline(), "co_return;"});
                 } else {
                     m_awaitMoved = true;
                 }

@@ -101,6 +101,7 @@ void VerilatedFst::open(const char* filename) VL_MT_SAFE_EXCLUDES(m_mutex) {
 void VerilatedFst::close() VL_MT_SAFE_EXCLUDES(m_mutex) {
     const VerilatedLockGuard lock{m_mutex};
     Super::closeBase();
+    emitTimeChangeMaybe();
     fstWriterClose(m_fst);
     m_fst = nullptr;
 }
@@ -108,10 +109,22 @@ void VerilatedFst::close() VL_MT_SAFE_EXCLUDES(m_mutex) {
 void VerilatedFst::flush() VL_MT_SAFE_EXCLUDES(m_mutex) {
     const VerilatedLockGuard lock{m_mutex};
     Super::flushBase();
+    emitTimeChangeMaybe();
     fstWriterFlushContext(m_fst);
 }
 
-void VerilatedFst::emitTimeChange(uint64_t timeui) { fstWriterEmitTimeChange(m_fst, timeui); }
+void VerilatedFst::emitTimeChange(uint64_t timeui) {
+    if (!timeui) fstWriterEmitTimeChange(m_fst, timeui);
+    m_timeui = timeui;
+}
+
+VL_ATTR_ALWINLINE
+void VerilatedFst::emitTimeChangeMaybe() {
+    if (VL_UNLIKELY(m_timeui)) {
+        fstWriterEmitTimeChange(m_fst, m_timeui);
+        m_timeui = 0;
+    }
+}
 
 //=============================================================================
 // Decl
@@ -127,7 +140,6 @@ void VerilatedFst::declDTypeEnum(int dtypenum, const char* name, uint32_t elemen
 // TODO: should return std::optional<fstScopeType>, but I can't have C++17
 static std::pair<bool, fstScopeType> toFstScopeType(VerilatedTracePrefixType type) {
     switch (type) {
-    case VerilatedTracePrefixType::ROOTIO_MODULE: return {true, FST_ST_VCD_MODULE};
     case VerilatedTracePrefixType::SCOPE_MODULE: return {true, FST_ST_VCD_MODULE};
     case VerilatedTracePrefixType::SCOPE_INTERFACE: return {true, FST_ST_VCD_INTERFACE};
     case VerilatedTracePrefixType::STRUCT_PACKED:
@@ -139,19 +151,23 @@ static std::pair<bool, fstScopeType> toFstScopeType(VerilatedTracePrefixType typ
 
 void VerilatedFst::pushPrefix(const std::string& name, VerilatedTracePrefixType type) {
     assert(!m_prefixStack.empty());  // Constructor makes an empty entry
-    std::string pname = name;
-    // An empty name means this is the root of a model created with name()=="".  The
-    // tools get upset if we try to pass this as empty, so we put the signals under a
-    // new scope, but the signals further down will be peers, not children (as usual
-    // for name()!="")
-    // Terminate earlier $root?
-    if (m_prefixStack.back().second == VerilatedTracePrefixType::ROOTIO_MODULE) popPrefix();
-    if (pname.empty()) {  // Start new temporary root
-        pname = "$rootio";  // VCD names are not backslash escaped
-        m_prefixStack.emplace_back("", VerilatedTracePrefixType::ROOTIO_WRAPPER);
-        type = VerilatedTracePrefixType::ROOTIO_MODULE;
+    // An empty name means this is the root of a model created with
+    // name()=="".  The tools get upset if we try to pass this as empty, so
+    // we put the signals under a new $rootio scope, but the signals
+    // further down will be peers, not children (as usual for name()!="").
+    const std::string prevPrefix = m_prefixStack.back().first;
+    if (name == "$rootio" && !prevPrefix.empty()) {
+        // Upper has name, we can suppress inserting $rootio, but still push so popPrefix works
+        m_prefixStack.emplace_back(prevPrefix, VerilatedTracePrefixType::ROOTIO_WRAPPER);
+        return;
+    } else if (name.empty()) {
+        m_prefixStack.emplace_back(prevPrefix, VerilatedTracePrefixType::ROOTIO_WRAPPER);
+        return;
     }
-    const std::string newPrefix = m_prefixStack.back().first + pname;
+
+    // This code assumes a signal at a given prefix level is declared before
+    // any pushPrefix are done at that same level.
+    const std::string newPrefix = prevPrefix + name;
     const auto pair = toFstScopeType(type);
     const bool properScope = pair.first;
     const fstScopeType scopeType = pair.second;
@@ -281,7 +297,7 @@ VerilatedFst::Buffer* VerilatedFst::getTraceBuffer(uint32_t fidx) {
 
 void VerilatedFst::commitTraceBuffer(VerilatedFst::Buffer* bufp) {
     if (offload()) {
-        OffloadBuffer* const offloadBufferp = static_cast<OffloadBuffer*>(bufp);
+        const OffloadBuffer* const offloadBufferp = static_cast<const OffloadBuffer*>(bufp);
         if (offloadBufferp->m_offloadBufferWritep) {
             m_offloadBufferWritep = offloadBufferp->m_offloadBufferWritep;
             return;  // Buffer will be deleted by the offload thread
@@ -311,12 +327,14 @@ void VerilatedFst::configure(const VerilatedTraceConfig& config) {
 VL_ATTR_ALWINLINE
 void VerilatedFstBuffer::emitEvent(uint32_t code) {
     VL_DEBUG_IFDEF(assert(m_symbolp[code]););
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], "1");
 }
 
 VL_ATTR_ALWINLINE
 void VerilatedFstBuffer::emitBit(uint32_t code, CData newval) {
     VL_DEBUG_IFDEF(assert(m_symbolp[code]););
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], newval ? "1" : "0");
 }
 
@@ -325,6 +343,7 @@ void VerilatedFstBuffer::emitCData(uint32_t code, CData newval, int bits) {
     char buf[VL_BYTESIZE];
     VL_DEBUG_IFDEF(assert(m_symbolp[code]););
     cvtCDataToStr(buf, newval << (VL_BYTESIZE - bits));
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], buf);
 }
 
@@ -333,6 +352,7 @@ void VerilatedFstBuffer::emitSData(uint32_t code, SData newval, int bits) {
     char buf[VL_SHORTSIZE];
     VL_DEBUG_IFDEF(assert(m_symbolp[code]););
     cvtSDataToStr(buf, newval << (VL_SHORTSIZE - bits));
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], buf);
 }
 
@@ -341,6 +361,7 @@ void VerilatedFstBuffer::emitIData(uint32_t code, IData newval, int bits) {
     char buf[VL_IDATASIZE];
     VL_DEBUG_IFDEF(assert(m_symbolp[code]););
     cvtIDataToStr(buf, newval << (VL_IDATASIZE - bits));
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], buf);
 }
 
@@ -349,6 +370,7 @@ void VerilatedFstBuffer::emitQData(uint32_t code, QData newval, int bits) {
     char buf[VL_QUADSIZE];
     VL_DEBUG_IFDEF(assert(m_symbolp[code]););
     cvtQDataToStr(buf, newval << (VL_QUADSIZE - bits));
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], buf);
 }
 
@@ -365,10 +387,12 @@ void VerilatedFstBuffer::emitWData(uint32_t code, const WData* newvalp, int bits
         cvtEDataToStr(wp, newvalp[--words]);
         wp += VL_EDATASIZE;
     }
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], m_strbufp);
 }
 
 VL_ATTR_ALWINLINE
 void VerilatedFstBuffer::emitDouble(uint32_t code, double newval) {
+    m_owner.emitTimeChangeMaybe();
     fstWriterEmitValueChange(m_fst, m_symbolp[code], &newval);
 }

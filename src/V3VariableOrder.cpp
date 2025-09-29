@@ -210,6 +210,7 @@ class VariableOrder final {
         sortAndAppend(m2v[emptyVec]);
     }
 
+    // cppcheck-suppress constParameterPointer
     void orderModuleVars(AstNodeModule* modp) {
         // Unlink all module variables from the module, compute attributes
         for (AstNode *nodep = modp->stmtsp(), *nextp; nodep; nodep = nextp) {
@@ -220,17 +221,17 @@ class VariableOrder final {
                 // Compute attributes up front
                 // Stratum
                 const int sigbytes = varp->dtypeSkipRefp()->widthAlignBytes();
-                const uint8_t stratum = (v3Global.opt.hierChild() && varp->isPrimaryIO()) ? 0
-                                        : (varp->isUsedClock() && varp->widthMin() == 1)  ? 1
-                                        : VN_IS(varp->dtypeSkipRefp(), UnpackArrayDType)  ? 9
-                                        : (varp->basicp() && varp->basicp()->isOpaque())  ? 8
-                                        : (varp->isScBv() || varp->isScBigUint())         ? 7
-                                        : (sigbytes == 8)                                 ? 6
-                                        : (sigbytes == 4)                                 ? 5
-                                        : (sigbytes == 2)                                 ? 3
-                                        : (sigbytes == 1)                                 ? 2
-                                                                                          : 10;
-                m_attributes.emplace(varp, VarAttributes{stratum, EmitCBase::isAnonOk(varp)});
+                const uint8_t stratum = (v3Global.opt.hierChild() && varp->isPrimaryIO())   ? 0
+                                        : (varp->isPrimaryClock() && varp->widthMin() == 1) ? 1
+                                        : VN_IS(varp->dtypeSkipRefp(), UnpackArrayDType)    ? 9
+                                        : (varp->basicp() && varp->basicp()->isOpaque())    ? 8
+                                        : (varp->isScBv() || varp->isScBigUint())           ? 7
+                                        : (sigbytes == 8)                                   ? 6
+                                        : (sigbytes == 4)                                   ? 5
+                                        : (sigbytes == 2)                                   ? 3
+                                        : (sigbytes == 1)                                   ? 2
+                                                                                            : 10;
+                m_attributes.emplace(varp, VarAttributes{stratum, EmitCUtil::isAnonOk(varp)});
             }
         }
 
@@ -254,7 +255,7 @@ public:
 // V3VariableOrder static functions
 
 void V3VariableOrder::orderAll(AstNetlist* netlistp) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
 
     MTaskAffinityMap mTaskAffinity;
 

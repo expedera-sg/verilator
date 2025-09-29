@@ -6,7 +6,7 @@ Input Languages
 ***************
 
 This section describes the languages Verilator takes as input.  See also
-:ref:`Configuration Files`.
+:ref:`Verilator Control Files`.
 
 
 Language Standard Support
@@ -90,14 +90,14 @@ wreal.
 Synthesis Directive Assertion Support
 -------------------------------------
 
-With the :vlopt:`--assert` option, Verilator reads any
+Verilator reads any :code:`//synopsys full_case` or :code:`//synopsys
+parallel_case` directives.  The same applies to any :code:`//ambit
+synthesis`, :code:`//cadence` or :code:`//pragma` directives of the same
+form.
 
-:code:`//synopsys full_case` or :code:`//synopsys parallel_case`
-directives.  The same applies to any :code:`//ambit synthesis`,
-:code:`//cadence` or :code:`//pragma` directives of the same form.
-
-When these synthesis directives are discovered, Verilator will either
-formally prove the directive to be true, or, failing that, will insert the
+When these synthesis directives are discovered, unless
+:vlopt:`--no-assert-case` option is used, Verilator will either formally
+prove the directive to be true, or, failing that, will insert the
 appropriate code to detect failing cases at simulation runtime and print an
 "Assertion failed" error message.
 
@@ -130,8 +130,9 @@ same time slot.
 Rising/falling/turn-off delays are currently unsupported and cause the
 :option:`RISEFALLDLY` warning.
 
-Minimum/typical/maximum delays are currently unsupported. The typical delay is
-always the one chosen. Such expressions cause the :option:`MINTYPMAX` warning.
+Minimum/typical/maximum delays are currently unsupported. The typical delay
+is always the one chosen. Such expressions cause the :option:`MINTYPMAXDLY`
+warning.
 
 Another consequence of using :vlopt:`--timing` is that the :vlopt:`--main`
 option generates a main file with a proper timing eval loop, eliminating the
@@ -168,7 +169,7 @@ files. The :option:`/*verilator&32;timing_off*/` and
 the encompassed timing controls and forks, regardless of the chosen
 :vlopt:`--timing` or :vlopt:`--no-timing` option. This can also be achieved
 using the :option:`timing_off` and :option:`timing_off` options in Verilator
-configuration files.
+Control Files.
 
 
 .. _Language Limitations:
@@ -334,7 +335,8 @@ Gate Primitives
 
 The 2-state gate primitives (and, buf, nand, nor, not, or, xnor, xor) are
 directly converted to behavioral equivalents.  The 3-state and MOS gate
-primitives are not supported.  Tables are not supported.
+primitives are not supported.  User-defined primitive (UDP) tables are
+supported.
 
 
 Specify blocks
@@ -477,7 +479,8 @@ shortreal
   other simulators either do not support float, or convert likewise.
 
 specify specparam
-  All specify blocks and timing checks are ignored.
+  All timing checks and specify blocks (except specparam, which is
+  supported) are ignored.
 
 uwire
   Verilator does not perform warning checking on uwires; it treats the
@@ -488,7 +491,7 @@ $bits, $countbits, $countones, $finish, $isunknown, $onehot, $onehot0, $signed, 
 
 $dump/$dumpports and related
   $dumpfile or $dumpports will create a VCD or FST file (based on
-  the :vlopt:`--trace` option given when the model was Verilated). This
+  the :vlopt:`--trace-vcd` option given when the model was Verilated). This
   will take effect starting at the next eval() call.  If you have multiple
   Verilated designs under the same C model, this will dump signals
   only from the design containing the $dumpvars.
@@ -535,4 +538,4 @@ $test$plusargs, $value$plusargs
         {VerilatedContext*} ->commandArgs(argc, argv);
 
   to register the command line before calling $test$plusargs or
-  $value$plusargs.
+  $value$plusargs. Or use :vlopt:`--binary` or :vlopt:`--main`.

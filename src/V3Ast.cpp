@@ -49,14 +49,58 @@ bool VNUser4InUse::s_userBusy = false;
 
 int AstNodeDType::s_uniqueNum = 0;
 
+V3AST_VCMETHOD_ITEMDATA_DECL;
+
+//======================================================================
+// VCMethod information
+
+VCMethod VCMethod::arrayMethod(const string& name) {
+    for (auto& it : s_itemData)
+        if (it.m_name == name) return it.m_e;
+    v3fatalSrc("Not a method name known to VCMethod::s_itemData: '" << name << '\'');
+    return VCMethod{};
+}
+void VCMethod::selfTest() {
+    int i = 0;
+    for (auto& it : s_itemData) {
+        VCMethod exp{i};
+        UASSERT_STATIC(it.m_e == exp,
+                       "VCMethod::s_itemData table rows are out-of-order, starting at row "s
+                           + cvtToStr(i) + " '" + +it.m_name + '\'');
+        ++i;
+    }
+}
+
 //######################################################################
 // VNType
 
-const VNTypeInfo VNType::typeInfoTable[] = {
+const VNTypeInfo VNType::s_typeInfoTable[VNType::NUM_TYPES()] = {
 #include "V3Ast__gen_type_info.h"  // From ./astgen
 };
 
 std::ostream& operator<<(std::ostream& os, VNType rhs);
+
+//######################################################################
+// VFwdType
+
+bool VFwdType::isNodeCompatible(const AstNode* nodep) const {
+    const AstNode* defp = nodep;
+    if (const AstTypedef* const adefp = VN_CAST(defp, Typedef)) defp = adefp->subDTypep();
+    if (const AstNodeDType* const adefp = VN_CAST(defp, NodeDType))
+        defp = adefp->skipRefToNonRefp();
+    switch (m_e) {
+    case VFwdType::NONE: return true; break;
+    case VFwdType::ENUM: return VN_IS(defp, EnumDType); break;
+    case VFwdType::STRUCT: return VN_IS(defp, StructDType); break;
+    case VFwdType::UNION: return VN_IS(defp, UnionDType); break;
+    case VFwdType::INTERFACE_CLASS:  // FALLTHRU  // TODO: Over permissive for now
+    case VFwdType::CLASS: return VN_IS(defp, ClassRefDType) || VN_IS(defp, Class); break;
+    case VFwdType::GENERIC_INTERFACE: return VN_IS(defp, IfaceRefDType); break;
+    default: v3fatalSrc("Bad case");
+    }
+    VL_UNREACHABLE;
+    return false;  // LCOV_EXCL_LINE
+}
 
 //######################################################################
 // VSelfPointerText
@@ -64,10 +108,12 @@ std::ostream& operator<<(std::ostream& os, VNType rhs);
 const std::shared_ptr<const string> VSelfPointerText::s_emptyp = std::make_shared<string>("");
 const std::shared_ptr<const string> VSelfPointerText::s_thisp = std::make_shared<string>("this");
 
+string VSelfPointerText::replaceThis(bool useSelfForThis, const string& text) {
+    return useSelfForThis ? VString::replaceWord(text, "this", "vlSelf") : text;
+}
+
 string VSelfPointerText::protect(bool useSelfForThis, bool protect) const {
-    const string& sp
-        = useSelfForThis ? VString::replaceWord(asString(), "this", "vlSelf") : asString();
-    return VIdProtect::protectWordsIf(sp, protect);
+    return VIdProtect::protectWordsIf(replaceThis(useSelfForThis, asString()), protect);
 }
 
 //######################################################################
@@ -191,6 +237,11 @@ string AstNode::prettyName(const string& namein) VL_PURE {
                 pos += 7;
                 continue;
             }
+            if (0 == std::strncmp(pos, "__LIB__", 7)) {
+                pretty = "";  // Trim library name before module name
+                pos += 7;
+                continue;
+            }
             if (0 == std::strncmp(pos, "__PVT__", 7)) {
                 pretty += "";
                 pos += 7;
@@ -227,14 +278,13 @@ string AstNode::vpiName(const string& namein) {
     // This is slightly different from prettyName, in that when we encounter escaped characters,
     // we change that identifier to an escaped identifier, wrapping it with '\' and ' '
     // as specified in LRM 23.6
-    string name = namein;
-    if (0 == namein.substr(0, 7).compare("__SYM__")) name = namein.substr(7);
+    const size_t offset = VString::startsWith(namein, "__SYM__") ? 7 : 0;
     string pretty;
-    pretty.reserve(name.length());
+    pretty.reserve(namein.length());
     bool inEscapedIdent = false;
     int lastIdent = 0;
 
-    for (const char* pos = name.c_str(); *pos;) {
+    for (const char* pos = namein.c_str() + offset; *pos;) {
         char specialChar = 0;
         if (pos[0] == '-' && pos[1] == '>') {  // ->
             specialChar = '.';
@@ -252,7 +302,7 @@ string AstNode::vpiName(const string& namein) {
             } else if (0 == std::strncmp(pos, "__PVT__", 7)) {
                 pos += 7;
                 continue;
-            } else if (pos[0] == '_' && pos[1] == '_' && pos[2] == '0' && std::isxdigit(pos[3])
+            } else if (0 == std::strncmp(pos, "__0", 3) && std::isxdigit(pos[3])
                        && std::isxdigit(pos[4])) {
                 char value = 0;
                 value += 16
@@ -322,7 +372,7 @@ void AstNode::debugTreeChange(const AstNode* nodep, const char* prefix, int line
 //  // Commenting out the section below may crash, as the tree state
 //  // between edits is not always consistent for printing
 //  cout<<"-treeChange: V3Ast.cpp:"<<lineno<<" Tree Change for "<<prefix<<endl;
-//  v3Global.rootp()->dumpTree("-  treeChange: ");
+//  if (debug()) v3Global.rootp()->dumpTree("-  treeChange: ");
 //  if (next||1) nodep->dumpTreeAndNext(cout, prefix);
 //  else nodep->dumpTree(prefix);
 //  nodep->checkTree();
@@ -519,6 +569,10 @@ void AstNode::replaceWith(AstNode* newp) {
     this->unlinkFrBack(&repHandle);
     repHandle.relink(newp);
 }
+void AstNode::replaceWithKeepDType(AstNode* newp) {
+    newp->dtypeFrom(this);
+    replaceWith(newp);
+}
 
 void VNRelinker::dump(std::ostream& str) const {
     str << " BK=" << reinterpret_cast<uint32_t*>(m_backp);
@@ -535,6 +589,7 @@ AstNode* AstNode::unlinkFrBackWithNext(VNRelinker* linkerp) {
     AstNode* const oldp = this;
     UASSERT_OBJ(oldp->m_backp, oldp, "Node has no back, already unlinked?");
     oldp->editCountInc();
+    // cppcheck-suppress shadowFunction
     AstNode* const backp = oldp->m_backp;
     if (linkerp) {
         linkerp->m_oldp = oldp;
@@ -597,6 +652,7 @@ AstNode* AstNode::unlinkFrBack(VNRelinker* linkerp) {
     AstNode* const oldp = this;
     UASSERT_OBJ(oldp->m_backp, oldp, "Node has no back, already unlinked?");
     oldp->editCountInc();
+    // cppcheck-suppress shadowFunction
     AstNode* const backp = oldp->m_backp;
     if (linkerp) {
         linkerp->m_oldp = oldp;
@@ -665,7 +721,7 @@ AstNode* AstNode::unlinkFrBack(VNRelinker* linkerp) {
 
 void AstNode::relink(VNRelinker* linkerp) {
     if (debug() > 8) {
-        UINFO(0, " EDIT:      relink: ");
+        UINFO_PREFIX(" EDIT:      relink: ");
         dumpPtrs();
     }
     AstNode* const newp = this;
@@ -678,6 +734,7 @@ void AstNode::relink(VNRelinker* linkerp) {
         cout << endl;
     }
 
+    // cppcheck-suppress shadowFunction
     AstNode* const backp = linkerp->m_backp;
     debugTreeChange(this, "-relinkNew: ", __LINE__, true);
     debugTreeChange(backp, "-relinkTre: ", __LINE__, true);
@@ -741,6 +798,7 @@ void AstNode::addHereThisAsNext(AstNode* newp) {
     UASSERT_OBJ(this->m_backp, this, "'this' node has no back, already unlinked?");
     UASSERT_OBJ(newp->m_headtailp, newp, "m_headtailp not set on new node");
     //
+    // cppcheck-suppress shadowFunction
     AstNode* const backp = this->m_backp;
     AstNode* const newLastp = newp->m_headtailp;
     //
@@ -1042,11 +1100,9 @@ AstNode* AstNode::iterateSubtreeReturnEdits(VNVisitor& v) {
     } else if (!nodep->backp()) {
         // Calling on standalone tree; insert a shim node so we can keep
         // track, then delete it on completion
-        AstBegin* const tempp = new AstBegin{nodep->fileline(), "[EditWrapper]", nodep};
-        {
-            VL_DO_DANGLING(tempp->stmtsp()->accept(v),
-                           nodep);  // nodep to null as may be replaced
-        }
+        AstBegin* const tempp = new AstBegin{nodep->fileline(), "[EditWrapper]", nodep, false};
+        // nodep to null as may be replaced
+        VL_DO_DANGLING(tempp->stmtsp()->accept(v), nodep);
         nodep = tempp->stmtsp()->unlinkFrBackWithNext();
         VL_DO_DANGLING(tempp->deleteTree(), tempp);
     } else {
@@ -1126,8 +1182,7 @@ bool AstNode::sameTreeIter(const AstNode* node1p, const AstNode* node2p, bool ig
 void AstNode::checkTreeIter(const AstNode* prevBackp) const VL_MT_STABLE {
     // private: Check a tree and children
     UASSERT_OBJ(prevBackp == this->backp(), this, "Back node inconsistent");
-    // cppcheck-suppress danglingTempReference
-    const VNTypeInfo& typeInfo = *type().typeInfo();
+    const VNTypeInfo& typeInfo = VNType::typeInfo(this->type());
     for (int i = 1; i <= 4; i++) {
         AstNode* nodep = nullptr;
         switch (i) {
@@ -1153,6 +1208,7 @@ void AstNode::checkTreeIter(const AstNode* prevBackp) const VL_MT_STABLE {
             break;
         case VNTypeInfo::OP_LIST:
             if (const AstNode* const headp = nodep) {
+                // cppcheck-suppress shadowFunction
                 const AstNode* backp = this;
                 const AstNode* tailp;
                 const AstNode* opp = headp;
@@ -1222,7 +1278,7 @@ char* AstNode::dumpTreeJsonGdb(const char* str) { return strdup(str); }
 // allow for passing pointer literals like 0x42.. without manual cast
 char* AstNode::dumpTreeJsonGdb(intptr_t nodep) {
     if (!nodep) return strdup("{\"addr\":\"NULL\"}\n");
-    return dumpTreeJsonGdb((const AstNode*)nodep);
+    return dumpTreeJsonGdb(reinterpret_cast<const AstNode*>(nodep));
 }
 // cppcheck-suppress unusedFunction  // Debug only
 void AstNode::dumpGdb(const AstNode* nodep) {  // For GDB only  // LCOV_EXCL_LINE
@@ -1338,7 +1394,7 @@ void AstNode::dumpTreeFile(const string& filename, bool doDump) {
     // Not const function as calls checkTree
     if (doDump) {
         {  // Write log & close
-            UINFO(2, "Dumping " << filename << endl);
+            UINFO(2, "Dumping " << filename);
             const std::unique_ptr<std::ofstream> logsp{V3File::new_ofstream(filename)};
             if (logsp->fail()) v3fatal("Can't write file: " << filename);
             *logsp << "Verilator Tree Dump (format 0x3900) from <e" << std::dec << editCountLast();
@@ -1357,8 +1413,8 @@ void AstNode::dumpTreeFile(const string& filename, bool doDump) {
 static void drawChildren(std::ostream& os, const AstNode* thisp, const AstNode* childp,
                          const std::string& childName) {
     if (childp) {
-        os << "\tn" << cvtToHex(thisp) << " -> n" << cvtToHex(childp) << " ["
-           << "label=\"" << childName << "\" color=red];\n";
+        os << "\tn" << cvtToHex(thisp) << " -> n" << cvtToHex(childp) << " [" << "label=\""
+           << childName << "\" color=red];\n";
         for (const AstNode* nodep = childp; nodep; nodep = nodep->nextp()) {
             nodep->dumpTreeDot(os);
             if (nodep->nextp()) {
@@ -1372,8 +1428,7 @@ static void drawChildren(std::ostream& os, const AstNode* thisp, const AstNode* 
 }
 
 void AstNode::dumpTreeDot(std::ostream& os) const {
-    os << "\tn" << cvtToHex(this) << "\t["
-       << "label=\"" << typeName() << "\\n"
+    os << "\tn" << cvtToHex(this) << "\t[" << "label=\"" << typeName() << "\\n"
        << name() << "\"];\n";
     drawChildren(os, this, m_op1p, "op1");
     drawChildren(os, this, m_op2p, "op2");
@@ -1383,7 +1438,7 @@ void AstNode::dumpTreeDot(std::ostream& os) const {
 
 void AstNode::dumpTreeJsonFile(const string& filename, bool doDump) {
     if (!doDump) return;
-    UINFO(2, "Dumping " << filename << endl);
+    UINFO(2, "Dumping " << filename);
     const std::unique_ptr<std::ofstream> treejsonp{V3File::new_ofstream(filename)};
     if (treejsonp->fail()) v3fatal("Can't write file: " << filename);
     dumpTreeJson(*treejsonp);
@@ -1392,7 +1447,7 @@ void AstNode::dumpTreeJsonFile(const string& filename, bool doDump) {
 
 void AstNode::dumpJsonMetaFileGdb(const char* filename) { dumpJsonMetaFile(filename); }
 void AstNode::dumpJsonMetaFile(const string& filename) {
-    UINFO(2, "Dumping " << filename << endl);
+    UINFO(2, "Dumping " << filename);
     const std::unique_ptr<std::ofstream> treejsonp{V3File::new_ofstream(filename)};
     if (treejsonp->fail()) v3fatalStatic("Can't write file: " << filename);
     *treejsonp << '{';
@@ -1406,12 +1461,11 @@ void AstNode::dumpJsonMetaFile(const string& filename) {
 
 void AstNode::dumpTreeDotFile(const string& filename, bool doDump) {
     if (doDump) {
-        UINFO(2, "Dumping " << filename << endl);
+        UINFO(2, "Dumping " << filename);
         const std::unique_ptr<std::ofstream> treedotp{V3File::new_ofstream(filename)};
         if (treedotp->fail()) v3fatal("Can't write file: " << filename);
         *treedotp << "digraph vTree{\n";
-        *treedotp << "\tgraph\t[label=\"" << filename + ".dot"
-                  << "\",\n";
+        *treedotp << "\tgraph\t[label=\"" << filename + ".dot" << "\",\n";
         *treedotp << "\t\t labelloc=t, labeljust=l,\n";
         *treedotp << "\t\t //size=\"7.5,10\",\n"
                   << "];\n";
@@ -1425,29 +1479,30 @@ string AstNode::instanceStr() const {
     // in case we have some circular reference bug.
     constexpr unsigned maxIterations = 10000;
     unsigned iterCount = 0;
-    for (const AstNode* backp = this; backp; backp = backp->backp(), ++iterCount) {
+    // Walk 'backp' chain
+    for (const AstNode* currp = this; currp; currp = currp->backp(), ++iterCount) {
         if (VL_UNCOVERABLE(iterCount >= maxIterations)) return "";  // LCOV_EXCL_LINE
         // Prefer the enclosing scope, if there is one. This is always under the enclosing module,
         // so just pick it up when encountered
-        if (const AstScope* const scopep = VN_CAST(backp, Scope)) {
+        if (const AstScope* const scopep = VN_CAST(currp, Scope)) {
             return scopep->isTop() ? "" : "... note: In instance " + scopep->prettyNameQ();
         }
         // If scopes don't exist, report an example instance of the enclosing module
-        if (const AstModule* const modp = VN_CAST(backp, Module)) {
+        if (const AstModule* const modp = VN_CAST(currp, Module)) {
             const string instanceName = modp->someInstanceName();
             return instanceName.empty() ? "" : "... note: In instance '" + instanceName + "'";
         }
     }
     return "";
 }
-void AstNode::v3errorEnd(std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
+void AstNode::v3errorEnd(const std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
     // Don't look for instance name when warning is disabled.
     // In case of large number of warnings, this can
     // take significant amount of time
     const string instanceStrExtra
         = m_fileline->warnIsOff(V3Error::s().errorCode()) ? "" : instanceStr();
     if (!m_fileline) {
-        V3Error::v3errorEnd(str, instanceStrExtra);
+        V3Error::v3errorEnd(str, instanceStrExtra, nullptr);
     } else {
         std::ostringstream nsstr;
         nsstr << str.str();
@@ -1455,12 +1510,13 @@ void AstNode::v3errorEnd(std::ostringstream& str) const VL_RELEASE(V3Error::s().
             nsstr << '\n';
             nsstr << "-node: ";
             const_cast<AstNode*>(this)->dump(nsstr);
-            nsstr << endl;
+            nsstr << '\n';
         }
         m_fileline->v3errorEnd(nsstr, instanceStrExtra);
     }
 }
-void AstNode::v3errorEndFatal(std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
+void AstNode::v3errorEndFatal(const std::ostringstream& str) const
+    VL_RELEASE(V3Error::s().m_mutex) {
     v3errorEnd(str);
     assert(0);  // LCOV_EXCL_LINE
     VL_UNREACHABLE;
@@ -1577,15 +1633,18 @@ static VCastable computeCastableImp(const AstNodeDType* toDtp, const AstNodeDTyp
         return VCastable::COMPATIBLE;
     } else if (toNumericable) {
         if (fromNumericable) return VCastable::COMPATIBLE;
-    } else if (VN_IS(toDtp, EnumDType)) {
+    } else if (VN_IS(toBaseDtp, EnumDType)) {
         if (VN_IS(fromBaseDtp, EnumDType) && toDtp->sameTree(fromDtp))
             return VCastable::ENUM_IMPLICIT;
         if (fromNumericable) return VCastable::ENUM_EXPLICIT;
+    } else if (VN_IS(toDtp, QueueDType)
+               && (VN_IS(fromDtp, BasicDType) || VN_IS(fromDtp, StreamDType))) {
+        return VCastable::COMPATIBLE;
     } else if (VN_IS(toDtp, ClassRefDType) && VN_IS(fromConstp, Const)) {
         if (fromConstp->isNull()) return VCastable::COMPATIBLE;
     } else if (VN_IS(toDtp, ClassRefDType) && VN_IS(fromDtp, ClassRefDType)) {
-        const auto toClassp = VN_AS(toDtp, ClassRefDType)->classp();
-        const auto fromClassp = VN_AS(fromDtp, ClassRefDType)->classp();
+        const AstClass* const toClassp = VN_AS(toDtp, ClassRefDType)->classp();
+        const AstClass* const fromClassp = VN_AS(fromDtp, ClassRefDType)->classp();
         const bool downcast = AstClass::isClassExtendedFrom(toClassp, fromClassp);
         const bool upcast = AstClass::isClassExtendedFrom(fromClassp, toClassp);
         if (upcast) {
@@ -1602,9 +1661,9 @@ static VCastable computeCastableImp(const AstNodeDType* toDtp, const AstNodeDTyp
 VCastable AstNode::computeCastable(const AstNodeDType* toDtp, const AstNodeDType* fromDtp,
                                    const AstNode* fromConstp) {
     const auto castable = computeCastableImp(toDtp, fromDtp, fromConstp);
-    UINFO(9, "  castable=" << castable << "  for " << toDtp << endl);
-    UINFO(9, "     =?= " << fromDtp << endl);
-    if (fromConstp) UINFO(9, "     const= " << fromConstp << endl);
+    UINFO(9, "  castable=" << castable << "  for " << toDtp);
+    UINFO(9, "     =?= " << fromDtp);
+    if (fromConstp) UINFO(9, "     const= " << fromConstp);
     return castable;
 }
 
@@ -1629,7 +1688,7 @@ AstNodeDType* AstNode::getCommonClassTypep(AstNode* node1p, AstNode* node2p) {
     while (classDtypep1) {
         const VCastable castable = computeCastable(classDtypep1, node2p->dtypep(), node2p);
         if (castable == VCastable::COMPATIBLE) return classDtypep1;
-        AstClassExtends* const extendsp = classDtypep1->classp()->extendsp();
+        const AstClassExtends* const extendsp = classDtypep1->classp()->extendsp();
         classDtypep1 = extendsp ? VN_AS(extendsp->dtypep(), ClassRefDType) : nullptr;
     }
     return nullptr;

@@ -95,7 +95,7 @@ enum ForkType : uint8_t {
 
 enum PropagationType : uint8_t {
     P_CALL = 1,  // Propagation through call to a function/task/method
-    P_FORK = 2,  // Propagation due to fork's behaviour
+    P_FORK = 2,  // Propagation due to fork's behavior
     P_SIGNATURE = 3,  // Propagation required to maintain C++ function's signature requirements
 };
 
@@ -179,8 +179,6 @@ class TimingSuspendableVisitor final : public VNVisitor {
     //                                                                  needs process metadata.
     //  Ast{NodeProcedure,CFunc,Begin}::user3()  -> DependencyVertex*.  Vertex in m_suspGraph
     //  Ast{NodeProcedure,CFunc,Begin}::user3()  -> DependencyVertex*.  Vertex in m_procGraph
-    const VNUser1InUse m_user1InUse;
-    const VNUser2InUse m_user2InUse;
     const VNUser3InUse m_user3InUse;
     const VNUser4InUse m_user4InUse;
 
@@ -255,7 +253,7 @@ class TimingSuspendableVisitor final : public VNVisitor {
 
     // VISITORS
     void visit(AstClass* nodep) override {
-        UASSERT(!m_classp, "Class under class");
+        UASSERT_OBJ(!m_classp, nodep, "Class under class");
         VL_RESTORER(m_classp);
         m_classp = nodep;
         iterateChildren(nodep);
@@ -266,7 +264,7 @@ class TimingSuspendableVisitor final : public VNVisitor {
         getNeedsProcDepVtx(nodep);
         addFlags(nodep, T_ALLOCS_PROC);
         if (VN_IS(nodep, Always)) {
-            UINFO(1, "Always does " << (nodep->needProcess() ? "" : "NOT ") << "need process\n");
+            UINFO(9, "Always does " << (nodep->needProcess() ? "" : "NOT ") << "need process");
         }
         iterateChildren(nodep);
     }
@@ -506,9 +504,9 @@ class TimingControlVisitor final : public VNVisitor {
             stmtp->replaceWith(delayp->unlinkFrBack());
             delayp->addStmtsp(stmtp);
             stmtp = delayp;
-        } else if (AstSenTree* const sensesp = VN_CAST(controlp, SenTree)) {
+        } else if (AstSenTree* const sentreep = VN_CAST(controlp, SenTree)) {
             AstEventControl* const eventControlp
-                = new AstEventControl{sensesp->fileline(), sensesp->unlinkFrBack(), nullptr};
+                = new AstEventControl{sentreep->fileline(), sentreep->unlinkFrBack(), nullptr};
             stmtp->replaceWith(eventControlp);
             eventControlp->addStmtsp(stmtp);
             stmtp = eventControlp;
@@ -545,7 +543,7 @@ class TimingControlVisitor final : public VNVisitor {
         FileLine* const flp = m_scopeTopp->fileline();
         auto* const awaitingCurrentTimep
             = new AstCMethodHard{flp, new AstVarRef{flp, getCreateDelayScheduler(), VAccess::READ},
-                                 "awaitingCurrentTime"};
+                                 VCMethod::SCHED_AWAITING_CURRENT_TIME};
         awaitingCurrentTimep->dtypeSetBit();
         m_delaySensesp
             = new AstSenTree{flp, new AstSenItem{flp, VEdgeType::ET_TRUE, awaitingCurrentTimep}};
@@ -568,7 +566,7 @@ class TimingControlVisitor final : public VNVisitor {
         FileLine* const flp = m_scopeTopp->fileline();
         auto* const awaitingCurrentTimep = new AstCMethodHard{
             flp, new AstVarRef{flp, getCreateDynamicTriggerScheduler(), VAccess::READ},
-            "evaluate"};
+            VCMethod::SCHED_EVALUATE};
         awaitingCurrentTimep->dtypeSetBit();
         m_dynamicSensesp
             = new AstSenTree{flp, new AstSenItem{flp, VEdgeType::ET_TRUE, awaitingCurrentTimep}};
@@ -619,8 +617,8 @@ class TimingControlVisitor final : public VNVisitor {
         });
     }
     // Creates a trigger scheduler variable
-    AstVarScope* getCreateTriggerSchedulerp(AstSenTree* const sensesp) {
-        if (!sensesp->user1p()) {
+    AstVarScope* getCreateTriggerSchedulerp(AstSenTree* const sentreep) {
+        if (!sentreep->user1p()) {
             if (!m_trigSchedDtp) {
                 m_trigSchedDtp
                     = new AstBasicDType{m_scopeTopp->fileline(), VBasicDTypeKwd::TRIGGER_SCHEDULER,
@@ -628,33 +626,33 @@ class TimingControlVisitor final : public VNVisitor {
                 m_netlistp->typeTablep()->addTypesp(m_trigSchedDtp);
             }
             AstVarScope* const trigSchedp
-                = m_scopeTopp->createTemp(m_trigSchedNames.get(sensesp), m_trigSchedDtp);
-            sensesp->user1p(trigSchedp);
+                = m_scopeTopp->createTemp(m_trigSchedNames.get(sentreep), m_trigSchedDtp);
+            sentreep->user1p(trigSchedp);
         }
-        return VN_AS(sensesp->user1p(), VarScope);
+        return VN_AS(sentreep->user1p(), VarScope);
     }
     // Creates a string describing the sentree
-    AstCExpr* createEventDescription(AstSenTree* const sensesp) const {
-        if (!sensesp->user2p()) {
+    AstCExpr* createEventDescription(AstSenTree* const sentreep) const {
+        if (!sentreep->user2p()) {
             std::stringstream ss;
             ss << '"';
-            V3EmitV::verilogForTree(sensesp, ss);
+            V3EmitV::verilogForTree(sentreep, ss);
             ss << '"';
             // possibly a multiline string
             std::string comment = ss.str();
             std::replace(comment.begin(), comment.end(), '\n', ' ');
-            AstCExpr* const commentp = new AstCExpr{sensesp->fileline(), comment, 0};
+            AstCExpr* const commentp = new AstCExpr{sentreep->fileline(), comment, 0};
             commentp->dtypeSetString();
-            sensesp->user2p(commentp);
+            sentreep->user2p(commentp);
             return commentp;
         }
-        return VN_AS(sensesp->user2p(), CExpr)->cloneTree(false);
+        return VN_AS(sentreep->user2p(), CExpr)->cloneTree(false);
     }
     // Adds debug info to a hardcoded method call
     void addDebugInfo(AstCMethodHard* const methodp) const {
         if (v3Global.opt.protectIds()) return;
         FileLine* const flp = methodp->fileline();
-        AstCExpr* const ap = new AstCExpr{flp, '"' + flp->filename() + '"', 0};
+        AstCExpr* const ap = new AstCExpr{flp, '"' + flp->filenameEsc() + '"', 0};
         ap->dtypeSetString();
         methodp->addPinsp(ap);
         AstCExpr* const bp = new AstCExpr{flp, cvtToStr(flp->lineno()), 0};
@@ -662,9 +660,9 @@ class TimingControlVisitor final : public VNVisitor {
         methodp->addPinsp(bp);
     }
     // Adds debug info to a trigSched.trigger() call
-    void addEventDebugInfo(AstCMethodHard* const methodp, AstSenTree* const sensesp) const {
+    void addEventDebugInfo(AstCMethodHard* const methodp, AstSenTree* const sentreep) const {
         if (v3Global.opt.protectIds()) return;
-        methodp->addPinsp(createEventDescription(sensesp));
+        methodp->addPinsp(createEventDescription(sentreep));
         addDebugInfo(methodp);
     }
     // Adds process pointer to a hardcoded method call
@@ -685,7 +683,7 @@ class TimingControlVisitor final : public VNVisitor {
     }
     // Move `insertBeforep` into `AstCLocalScope` if necessary to avoid jumping over
     // a variable initialization that whould be inserted before `insertBeforep`. All
-    // access to this variable shoule be contained within returned `AstCLocalScope`.
+    // access to this variable should be contained within returned `AstCLocalScope`.
     AstCLocalScope* addCLocalScope(FileLine* const flp, AstNode* const insertBeforep) const {
         if (!insertBeforep || !m_underJumpBlock) return nullptr;
         VNRelinker handle;
@@ -714,7 +712,7 @@ class TimingControlVisitor final : public VNVisitor {
     void addForkDone(AstBegin* const beginp, AstVarScope* const forkVscp) const {
         FileLine* const flp = beginp->fileline();
         auto* const donep = new AstCMethodHard{
-            beginp->fileline(), new AstVarRef{flp, forkVscp, VAccess::WRITE}, "done"};
+            beginp->fileline(), new AstVarRef{flp, forkVscp, VAccess::WRITE}, VCMethod::FORK_DONE};
         donep->dtypeSetVoid();
         addDebugInfo(donep);
         beginp->addStmtsp(donep->makeStmt());
@@ -723,8 +721,8 @@ class TimingControlVisitor final : public VNVisitor {
     void makeForkJoin(AstFork* const forkp) {
         // Create a fork sync var
         FileLine* const flp = forkp->fileline();
-        // If we're in a function, insert the sync var directly before the fork
-        AstNode* const insertBeforep = m_classp ? forkp : nullptr;
+        // Insert the sync var directly before the fork
+        AstNode* const insertBeforep = forkp;
         addCLocalScope(flp, insertBeforep);
         AstVarScope* forkVscp
             = createTemp(flp, forkp->name() + "__sync", getCreateForkSyncDTypep(), insertBeforep);
@@ -737,13 +735,13 @@ class TimingControlVisitor final : public VNVisitor {
         if (forkp->joinType().joinAny()) joinCount = 1;
         // Set the join counter
         auto* const initp = new AstCMethodHard{flp, new AstVarRef{flp, forkVscp, VAccess::WRITE},
-                                               "init", new AstConst{flp, joinCount}};
+                                               VCMethod::FORK_INIT, new AstConst{flp, joinCount}};
         initp->dtypeSetVoid();
         addProcessInfo(initp);
         forkp->addHereThisAsNext(initp->makeStmt());
         // Await the join at the end
-        auto* const joinp
-            = new AstCMethodHard{flp, new AstVarRef{flp, forkVscp, VAccess::WRITE}, "join"};
+        auto* const joinp = new AstCMethodHard{flp, new AstVarRef{flp, forkVscp, VAccess::WRITE},
+                                               VCMethod::FORK_JOIN};
         joinp->dtypeSetVoid();
         addProcessInfo(joinp);
         addDebugInfo(joinp);
@@ -754,7 +752,7 @@ class TimingControlVisitor final : public VNVisitor {
 
     // VISITORS
     void visit(AstNodeModule* nodep) override {
-        UASSERT(!m_classp, "Module or class under class");
+        UASSERT_OBJ(!m_classp, nodep, "Module or class under class");
         VL_RESTORER(m_classp);
         m_classp = VN_CAST(nodep, Class);
         VL_RESTORER(m_forkCnt);
@@ -789,7 +787,7 @@ class TimingControlVisitor final : public VNVisitor {
         visit(static_cast<AstNodeProcedure*>(nodep));
         if (nodep->needProcess() && !nodep->user1SetOnce()) {
             nodep->addStmtsp(
-                new AstCStmt{nodep->fileline(), "vlProcess->state(VlProcess::FINISHED);\n"});
+                new AstCStmt{nodep->fileline(), "vlProcess->state(VlProcess::FINISHED);"});
         }
     }
     void visit(AstJumpBlock* nodep) override {
@@ -812,17 +810,17 @@ class TimingControlVisitor final : public VNVisitor {
         if (!hasFlags(nodep, T_SUSPENDEE)) return;
         nodep->setSuspendable();
         FileLine* const flp = nodep->fileline();
-        AstSenTree* const sensesp = m_activep->sensesp();
-        if (sensesp->hasClocked()) {
+        AstSenTree* const sentreep = m_activep->sentreep();
+        if (sentreep->hasClocked()) {
             AstNode* const bodysp = nodep->stmtsp()->unlinkFrBackWithNext();
-            auto* const controlp = new AstEventControl{flp, sensesp->cloneTree(false), bodysp};
+            auto* const controlp = new AstEventControl{flp, sentreep->cloneTree(false), bodysp};
             nodep->addStmtsp(controlp);
             iterate(controlp);
         }
         // Note: The 'while (true)' outer loop will be added in V3Sched
         auto* const activep = new AstActive{
             flp, "", new AstSenTree{flp, new AstSenItem{flp, AstSenItem::Initial{}}}};
-        activep->sensesStorep(activep->sensesp());
+        activep->senTreeStorep(activep->sentreep());
         activep->addStmtsp(nodep->unlinkFrBack());
         m_activep->addNextHere(activep);
     }
@@ -835,7 +833,7 @@ class TimingControlVisitor final : public VNVisitor {
 
         nodep->rtnType("VlCoroutine");
         // If in a class, create a shared pointer to 'this'
-        if (m_classp) nodep->addInitsp(new AstCStmt{nodep->fileline(), "VL_KEEP_THIS;\n"});
+        if (m_classp) nodep->addInitsp(new AstCStmt{nodep->fileline(), "VL_KEEP_THIS;"});
         AstNode* firstCoStmtp = nullptr;  // First co_* statement in the function
         nodep->exists([&](AstCAwait* const awaitp) -> bool { return (firstCoStmtp = awaitp); });
         if (!firstCoStmtp) {
@@ -843,7 +841,7 @@ class TimingControlVisitor final : public VNVisitor {
             // overridden by a suspendable, but doesn't have any awaits itself). Add a
             // co_return at the end (either that or a co_await is required in a
             // coroutine)
-            firstCoStmtp = new AstCStmt{nodep->fileline(), "co_return;\n"};
+            firstCoStmtp = new AstCStmt{nodep->fileline(), "co_return;"};
             nodep->addStmtsp(firstCoStmtp);
         }
         if (nodep->dpiExportImpl()) {
@@ -886,7 +884,8 @@ class TimingControlVisitor final : public VNVisitor {
         }
         // Replace self with a 'co_await dlySched.delay(<valuep>)'
         AstCMethodHard* const delayMethodp = new AstCMethodHard{
-            flp, new AstVarRef{flp, getCreateDelayScheduler(), VAccess::WRITE}, "delay", valuep};
+            flp, new AstVarRef{flp, getCreateDelayScheduler(), VAccess::WRITE},
+            VCMethod::SCHED_DELAY, valuep};
         delayMethodp->dtypeSetVoid();
         addProcessInfo(delayMethodp);
         addDebugInfo(delayMethodp);
@@ -905,11 +904,15 @@ class TimingControlVisitor final : public VNVisitor {
     void visit(AstEventControl* nodep) override {
         // Do not allow waiting on local named events, as they get enqueued for clearing, but can
         // go out of scope before that happens
-        if (!nodep->sensesp()) nodep->v3warn(E_UNSUPPORTED, "Unsupported: no sense equation (@*)");
+        if (!nodep->sentreep()) {
+            nodep->v3warn(E_UNSUPPORTED, "Unsupported: no sense equation (@*)");
+            VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+            return;
+        }
         FileLine* const flp = nodep->fileline();
         // Relink child statements after the event control
         if (nodep->stmtsp()) nodep->addNextHere(nodep->stmtsp()->unlinkFrBackWithNext());
-        if (needDynamicTrigger(nodep->sensesp())) {
+        if (needDynamicTrigger(nodep->sentreep())) {
             // Create the trigger variable and init it with 0
             AstVarScope* const trigvscp
                 = createTemp(flp, m_dynTrigNames.get(nodep), nodep->findBitDType(), nodep);
@@ -920,11 +923,11 @@ class TimingControlVisitor final : public VNVisitor {
             // call
             auto* const evalMethodp = new AstCMethodHard{
                 flp, new AstVarRef{flp, getCreateDynamicTriggerScheduler(), VAccess::WRITE},
-                "evaluation"};
+                VCMethod::SCHED_EVALUATION};
             evalMethodp->dtypeSetVoid();
             addProcessInfo(evalMethodp);
-            auto* const sensesp = nodep->sensesp();
-            addEventDebugInfo(evalMethodp, sensesp);
+            auto* const sentreep = nodep->sentreep();
+            addEventDebugInfo(evalMethodp, sentreep);
             // Create the co_await
             AstCAwait* const awaitEvalp
                 = new AstCAwait{flp, evalMethodp, getCreateDynamicTriggerSenTree()};
@@ -932,7 +935,7 @@ class TimingControlVisitor final : public VNVisitor {
             // Construct the sen expression for this sentree
             UASSERT_OBJ(m_senExprBuilderp, nodep, "No SenExprBuilder for this scope");
             auto* const assignp = new AstAssign{flp, new AstVarRef{flp, trigvscp, VAccess::WRITE},
-                                                m_senExprBuilderp->build(sensesp).first};
+                                                m_senExprBuilderp->build(sentreep).first};
             // Get the SenExprBuilder results
             const SenExprBuilder::Results senResults = m_senExprBuilderp->getAndClearResults();
             // Put all and inits before the trigger eval loop
@@ -952,40 +955,40 @@ class TimingControlVisitor final : public VNVisitor {
             // If it was, a call to the scheduler's evaluate() will return true
             AstCMethodHard* const anyTriggeredMethodp = new AstCMethodHard{
                 flp, new AstVarRef{flp, getCreateDynamicTriggerScheduler(), VAccess::WRITE},
-                "anyTriggered", new AstVarRef{flp, trigvscp, VAccess::READ}};
+                VCMethod::SCHED_ANY_TRIGGERED, new AstVarRef{flp, trigvscp, VAccess::READ}};
             anyTriggeredMethodp->dtypeSetVoid();
             loopp->addStmtsp(anyTriggeredMethodp->makeStmt());
             // If the post update is destructive (e.g. event vars are cleared), create an await for
             // the post update step
-            if (destructivePostUpdate(sensesp)) {
+            if (destructivePostUpdate(sentreep)) {
                 AstCAwait* const awaitPostUpdatep = awaitEvalp->cloneTree(false);
-                VN_AS(awaitPostUpdatep->exprp(), CMethodHard)->name("postUpdate");
+                VN_AS(awaitPostUpdatep->exprp(), CMethodHard)->method(VCMethod::SCHED_POST_UPDATE);
                 loopp->addStmtsp(awaitPostUpdatep->makeStmt());
             }
             // Put the post updates at the end of the loop
             for (AstNodeStmt* const stmtp : senResults.m_postUpdates) loopp->addStmtsp(stmtp);
             // Finally, await the resumption step in 'act'
             AstCAwait* const awaitResumep = awaitEvalp->cloneTree(false);
-            VN_AS(awaitResumep->exprp(), CMethodHard)->name("resumption");
+            VN_AS(awaitResumep->exprp(), CMethodHard)->method(VCMethod::SCHED_RESUMPTION);
             AstNode::addNext<AstNodeStmt, AstNodeStmt>(loopp, awaitResumep->makeStmt());
             // Replace the event control with the loop
             nodep->replaceWith(loopp);
         } else {
-            auto* const sensesp = m_finder.getSenTree(nodep->sensesp());
-            nodep->sensesp()->unlinkFrBack()->deleteTree();
+            auto* const sentreep = m_finder.getSenTree(nodep->sentreep());
+            nodep->sentreep()->unlinkFrBack()->deleteTree();
             // Get this sentree's trigger scheduler
             // Replace self with a 'co_await trigSched.trigger()'
             auto* const triggerMethodp = new AstCMethodHard{
-                flp, new AstVarRef{flp, getCreateTriggerSchedulerp(sensesp), VAccess::WRITE},
-                "trigger"};
+                flp, new AstVarRef{flp, getCreateTriggerSchedulerp(sentreep), VAccess::WRITE},
+                VCMethod::SCHED_TRIGGER};
             triggerMethodp->dtypeSetVoid();
             // If it should be committed immediately, pass true, otherwise false
             triggerMethodp->addPinsp(nodep->user2() ? new AstConst{flp, AstConst::BitTrue{}}
                                                     : new AstConst{flp, AstConst::BitFalse{}});
             addProcessInfo(triggerMethodp);
-            addEventDebugInfo(triggerMethodp, sensesp);
+            addEventDebugInfo(triggerMethodp, sentreep);
             // Create the co_await
-            AstCAwait* const awaitp = new AstCAwait{flp, triggerMethodp, sensesp};
+            AstCAwait* const awaitp = new AstCAwait{flp, triggerMethodp, sentreep};
             awaitp->dtypeSetVoid();
             nodep->replaceWith(awaitp->makeStmt());
         }
@@ -1026,7 +1029,10 @@ class TimingControlVisitor final : public VNVisitor {
                 if (!controlp) controlp = nbaEventControlp;
             }
             controlp->replaceWith(forkp);
-            forkp->addStmtsp(controlp);
+            AstBegin* beginp = VN_CAST(controlp, Begin);
+            if (!beginp) beginp = new AstBegin{nodep->fileline(), "", controlp, false};
+            forkp->addStmtsp(beginp);
+            controlp = forkp;
         }
         UASSERT_OBJ(nodep, controlp, "Assignment should have timing control");
         addCLocalScope(flp, insertBeforep);
@@ -1221,14 +1227,9 @@ class TimingControlVisitor final : public VNVisitor {
         AstNode* stmtp = nodep->stmtsp();
         // Put each statement in a begin
         while (stmtp) {
-            if (!VN_IS(stmtp, Begin)) {
-                auto* const beginp = new AstBegin{stmtp->fileline(), "", nullptr};
-                if (hasFlags(stmtp, T_HAS_PROC)) addFlags(beginp, T_HAS_PROC);
-                stmtp->replaceWith(beginp);
-                beginp->addStmtsp(stmtp);
-                stmtp = beginp;
-            }
-            auto* const beginp = VN_AS(stmtp, Begin);
+            UASSERT_OBJ(VN_IS(stmtp, Begin), nodep,
+                        "All statements under forks must be begins at this point");
+            AstBegin* const beginp = VN_AS(stmtp, Begin);
             stmtp = beginp->nextp();
             iterate(beginp);
             // Even if we do not find any awaits, we cannot simply inline the process here, as new
@@ -1256,8 +1257,12 @@ public:
 // Timing class functions
 
 void V3Timing::timingAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
-    TimingSuspendableVisitor susVisitor{nodep};
-    if (v3Global.usesTiming()) TimingControlVisitor{nodep};
+    UINFO(2, __FUNCTION__ << ":");
+    {
+        const VNUser1InUse m_user1InUse;
+        const VNUser2InUse m_user2InUse;
+        TimingSuspendableVisitor{nodep};
+        if (v3Global.usesTiming()) TimingControlVisitor{nodep};
+    }
     V3Global::dumpCheckGlobalTree("timing", 0, dumpTreeEitherLevel() >= 3);
 }

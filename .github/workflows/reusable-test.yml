@@ -1,9 +1,8 @@
 ---
 # DESCRIPTION: Github actions config
-# This name is key to badges in README.rst, so we use the name build
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
-name: reusable-build
+name: reusable-test
 
 on:
   workflow_call:
@@ -21,10 +20,8 @@ on:
         required: true
         type: string
 
-
 env:
   CI_OS_NAME: linux
-  CI_COMMIT: ${{ github.sha }}
   CCACHE_COMPRESS: 1
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_LIMIT_MULTIPLE: 0.95
@@ -40,7 +37,7 @@ jobs:
 
   test:
     runs-on: ${{ inputs.os }}
-    name: Sub-test | ${{ inputs.os }} | ${{ inputs.cc }} | ${{inputs.reloc && 'reloc | ' || '' }} ${{ inputs.suite }}
+    name: Test
     env:
       CI_BUILD_STAGE_NAME: test
       CI_RUNS_ON: ${{ inputs.os }}
@@ -53,7 +50,7 @@ jobs:
     steps:
 
       - name: Download tar archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: ${{ env.VERILATOR_ARCHIVE }}
           path: ${{ github.workspace }}

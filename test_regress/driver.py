@@ -4,6 +4,7 @@
 
 import argparse
 import collections
+import ctypes
 import glob
 import hashlib
 import json
@@ -12,7 +13,9 @@ import multiprocessing
 import os
 import pickle
 import platform
+import pty
 import re
+import resource
 import runpy
 import shutil
 import signal
@@ -123,6 +126,7 @@ class Capabilities:
     # @lru_cache(maxsize=1024) broken with @staticmethod on older pythons we use
     _cached_cmake_version = None
     _cached_cxx_version = None
+    _cached_have_asan = None
     _cached_have_coroutines = None
     _cached_have_gdb = None
     _cached_have_sc = None
@@ -149,6 +153,12 @@ class Capabilities:
                 check=False)
 
         return Capabilities._cached_cxx_version
+
+    @staticproperty
+    def have_asan() -> bool:  # pylint: disable=no-method-argument
+        if Capabilities._cached_have_asan is None:
+            Capabilities._cached_have_asan = bool(Capabilities._verilator_get_supported('ASAN'))
+        return Capabilities._cached_have_asan
 
     @staticproperty
     def have_coroutines() -> bool:  # pylint: disable=no-method-argument
@@ -201,6 +211,7 @@ class Capabilities:
     # Fetch
     @staticmethod
     def warmup_cache() -> None:
+        _ignore = Capabilities.have_asan
         _ignore = Capabilities.have_coroutines
         _ignore = Capabilities.have_gdb
         _ignore = Capabilities.have_sc
@@ -607,6 +618,7 @@ class VlTest:
         self.py_filename = py_filename  # Name of .py file to get setup from
         self.running_id = running_id
         self.scenario = scenario
+        self.root = '..'  # Relative path to git root (above test_regress)
 
         self._force_pass = False
         self._have_solver_called = False
@@ -734,10 +746,19 @@ class VlTest:
         self.nc_define = 'NC'
         self.nc_flags = [
             "+licqueue", "+nowarn+LIBNOU", "+define+NC=1", "-q", "+assert", "+sv", "-c",
-            ("+access+r" if Args.trace else "")
+            "-xmlibdirname", (self.obj_dir + "/xcelium.d"), ("+access+r" if Args.trace else "")
         ]
         self.nc_flags2 = []  # Overridden in some sim files
-        self.nc_run_flags = ["+licqueue", "-q", "+assert", "+sv", "-R"]
+        self.nc_run_flags = [
+            "+licqueue",
+            "-q",
+            "+assert",
+            "+sv",
+            "-R",
+            "-covoverwrite",
+            "-xmlibdirname",
+            (self.obj_dir + "/xcelium.d"),
+        ]
         # ModelSim
         self.ms_define = 'MS'
         self.ms_flags = [
@@ -778,7 +799,7 @@ class VlTest:
             "10"
         ]
         self.verilator_flags2 = []
-        self.verilator_flags3 = ["--clk clk"]
+        self.verilator_flags3 = []
         self.verilator_make_gmake = True
         self.verilator_make_cmake = False
         self.verilated_debug = Args.verilated_debug
@@ -1036,7 +1057,7 @@ class VlTest:
         if Args.rr:
             verilator_flags += ["--rr"]
         if Args.trace:
-            verilator_flags += ["--trace"]
+            verilator_flags += ["--trace-vcd"]
         if Args.gdbsim or Args.rrsim:
             verilator_flags += ["-CFLAGS -ggdb -LDFLAGS -ggdb"]
         verilator_flags += ["--x-assign unique"]  # More likely to be buggy
@@ -1320,6 +1341,7 @@ class VlTest:
                     entering=self.obj_dir,
                     cmd=[
                         os.environ['MAKE'],
+                        (("-j " + str(Args.driver_build_jobs)) if Args.driver_build_jobs else ""),
                         "-C " + self.obj_dir,
                         "-f " + os.path.abspath(os.path.dirname(__file__)) + "/Makefile_obj",
                         ("" if self.verbose else "--no-print-directory"),
@@ -1354,6 +1376,25 @@ class VlTest:
                 VtOs.getenv_def('CFLAGS', ''), self.pli_filename
             ]
             self.run(logfile=self.obj_dir + "/pli_compile.log", fails=param['fails'], cmd=cmd)
+
+    def timeout(self, seconds):
+        """Limit the CPU time of the test - this limit is inherited
+        by all of the spawned child processess"""
+        #  An  unprivileged  process may set only its soft limit
+        #  to a value in the range from 0 up to the hard limit
+        _, hardlimit = resource.getrlimit(resource.RLIMIT_CPU)
+        softlimit = ctypes.c_long(min(seconds, ctypes.c_ulong(hardlimit).value)).value
+        # Casting is required due to a quirk in Python,
+        # rlimit values are interpreted as LONG, instead of ULONG
+        # https://github.com/python/cpython/issues/137044
+        rlimit = (softlimit, hardlimit)
+        resource.setrlimit(resource.RLIMIT_CPU, rlimit)
+
+    def leak_check_disable(self):
+        """Disable memory leak detection when leaks are expected,
+        e.g.: on early abnormal termination"""
+        asan_options = os.environ.get("ASAN_OPTIONS", "")
+        self.setenv("ASAN_OPTIONS", asan_options + ":detect_leaks=0")
 
     def execute(self, **kwargs) -> None:
         """Run simulation executable.
@@ -1517,6 +1558,7 @@ class VlTest:
                 *param['all_run_flags'],
                 ("'" if Args.gdbsim else ""),
             ]
+            cmd += self.driver_verilated_flags
             self.run(
                 cmd=cmd,
                 aslr_off=param['aslr_off'],  # Disable address space layour randomization
@@ -1551,6 +1593,10 @@ class VlTest:
     @property
     def driver_verilator_flags(self) -> list:
         return Args.passdown_verilator_flags
+
+    @property
+    def driver_verilated_flags(self) -> list:
+        return Args.passdown_verilated_flags
 
     @property
     def get_default_vltmt_threads(self) -> int:
@@ -1603,6 +1649,10 @@ class VlTest:
     @property
     def cxx_version(self) -> str:
         return Capabilities.cxx_version
+
+    @property
+    def have_asan(self) -> bool:
+        return Capabilities.have_asan
 
     @property
     def have_cmake(self) -> bool:
@@ -1674,7 +1724,7 @@ class VlTest:
             check_finished=False,  # Check for All Finished
             entering=None,  # Print entering directory information
             expect_filename=None,  # Filename that should match logfile
-            fails=False,  # Command should fail
+            fails=False,  # True: normal 1 exit code, 'any': any exit code
             logfile=None,  # Filename to write putput to
             tee=True,
             verilator_run=False) -> str:  # Move gcov data to parallel area
@@ -1714,52 +1764,62 @@ class VlTest:
         # Execute command redirecting output, keeping order between stderr and stdout.
         # Must do low-level IO so GCC interaction works (can't be line-based)
         status = None
-        if True:  # process_caller_block  # pylint: disable=using-constant-test
+        # process_caller_block  # pylint: disable=using-constant-test
 
-            logfh = None
-            if logfile:
-                logfh = open(logfile, 'wb')  # pylint: disable=consider-using-with
+        logfh = None
+        if logfile:
+            logfh = open(logfile, 'wb')  # pylint: disable=consider-using-with
 
-            with subprocess.Popen(command,
-                                  shell=True,
-                                  bufsize=0,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT) as proc:
-
-                rawbuf = bytearray(2048)
-
+        if not Args.interactive_debugger:
+            # Some parallel job's run() may attempt to capture driver.py's
+            # terminal, e.g. gdb does this. So, unless known we want to run GDB
+            # (where we want it to control the terminal), become a controlling
+            # terminal for this job so such a capture won't break driver.py's
+            # signaling, which would e.g. break control-C.
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.environ['TERM'] = "dumb"
+                subprocess.run(["stty", "nl"], check=True)  # No carriage returns
+                os.execlp("bash", "/bin/bash", "-c", command)
+            else:
                 while True:
-                    finished = proc.poll()
-                    # Need to check readinto once, even after poll "completes"
-                    got = proc.stdout.readinto(rawbuf)
-                    if got:
-                        data = rawbuf[0:got]
-                        if re.search(r'--debug-exit-uvm23: Exiting', str(data)):
-                            self._force_pass = True
-                            print("EXIT: " + str(data))
-                        if tee:
-                            sys.stdout.write(data.decode('latin-1'))
-                            if Args.interactive_debugger:
-                                sys.stdout.flush()
-                        if logfh:
-                            logfh.write(data)
-                    elif finished is not None:
+                    try:
+                        data = os.read(fd, 2048)
+                        self._run_output(data, logfh, tee)
+                        # Parent detects child termination by checking for b''
+                        if not data:
+                            break
+                    except OSError:
                         break
 
-                if logfh:
-                    logfh.close()
+                (pid, rc) = os.waitpid(pid, 0)
 
+        else:
+            # Do not redirect output when using an interactive debugger, so it
+            # can have direct access to the user terminal (so terminal control
+            # characters and the like work). That means the log file will be
+            # empty but hopefully that's ok, just re-run the test without the
+            # interactive debugger to confirm a fix.
+            with subprocess.Popen(command, shell=True, bufsize=0) as proc:
+                proc.wait()
                 rc = proc.returncode  # Negative if killed by signal
-                if (rc in (
-                        -4,  # SIGILL
-                        -8,  # SIGFPA
-                        -11)):  # SIGSEGV
-                    self.error("Exec failed with core dump")
-                    status = 10
-                elif rc:
-                    status = 10
-                else:
-                    status = 0
+
+        if logfh:
+            logfh.close()
+
+        if (rc in (
+                -4,  # SIGILL
+                -8,  # SIGFPA
+                -11)):  # SIGSEGV
+            self.error("Exec failed with core dump")
+            status = 128 + (-rc)  # So is "normal" shell 0-255 status
+        elif rc >= 256:
+            # waitpid returns status << 8; subprocess otherwise; handle both
+            status = int(rc / 256)  # So is shell $?-like
+        elif rc:
+            status = rc
+        else:
+            status = 0
 
         sys.stdout.flush()
         sys.stderr.flush()
@@ -1769,9 +1829,24 @@ class VlTest:
 
         if not fails and status:
             firstline = self._error_log_summary(logfile)
+            # Strip ANSI escape sequences
+            firstline = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', firstline)
             self.error("Exec of " + self._error_cmd_simplify(cmd) + " failed: " + firstline)
+
         if fails and status:
-            print("(Exec expected to fail, and did.)")
+            if not verilator_run:
+                print("(Exec failed, matching expected fail)")
+            elif fails == 'any':
+                print("(Exec failed, matching expected 'any' exit code fail)")
+            elif fails is True:
+                if status == 1:
+                    print("(Exec failed, matching expected 'True' exit code 1 fail)")
+                else:
+                    self.error("Exec of " + self._error_cmd_simplify(cmd) +
+                               " failed with exit code " + str(status) +
+                               ", but expected 'True' exit code 1 fail")
+            else:  # Future: support numeric exit code?
+                self.error("fails=" + str(fails) + " is not legal value")
         if fails and not status:
             self.error("Exec of " + self._error_cmd_simplify(cmd) + " ok, but expected to fail")
         if self.errors or self._skips:
@@ -1792,6 +1867,17 @@ class VlTest:
             return False
 
         return True
+
+    def _run_output(self, data, logfh, tee):
+        if re.search(r'--debug-exit-uvm23: Exiting', str(data)):
+            self._force_pass = True
+            print("EXIT: " + str(data))
+        if tee:
+            sys.stdout.write(data.decode('latin-1'))
+            if Args.interactive_debugger:
+                sys.stdout.flush()
+        if logfh:
+            logfh.write(data)
 
     def _run_log_try(self, logfile: str, check_finished: bool, moretry: bool) -> bool:
         # If moretry, then return true to try again
@@ -2183,9 +2269,10 @@ class VlTest:
             inputs = {}
             for line in fh:
                 if get_sigs:
-                    m = re.match(r'^\s*input\s*(\S+)\s*(\/[^\/]+\/|)\s*;', line)
+                    # Does not support escaped signals, we only need "clk" and a few others
+                    m = re.match(r'^\s*input\s*(logic|bit|reg|wire)?\s*([A-Za-z0-9_]+)', line)
                     if m:
-                        inputs[m.group(1)] = m.group(1)
+                        inputs[m.group(2)] = m.group(2)
                     if re.match(r'^\s*(function|task|endmodule)', line):
                         get_sigs = False
                 # Ignore any earlier inputs; Module 't' has precedence
@@ -2198,7 +2285,7 @@ class VlTest:
     #######################################################################
     # File utilities
 
-    def files_identical(self, fn1: str, fn2: str, is_logfile=False) -> None:
+    def files_identical(self, fn1: str, fn2: str, is_logfile=False, strip_hex=False) -> None:
         """Test if two files have identical contents"""
         delay = 0.25
         for tryn in range(Args.log_retries, -1, -1):
@@ -2207,10 +2294,11 @@ class VlTest:
                 delay = min(1, delay * 2)
             moretry = tryn != 0
             if not self._files_identical_try(
-                    fn1=fn1, fn2=fn2, is_logfile=is_logfile, moretry=moretry):
+                    fn1=fn1, fn2=fn2, is_logfile=is_logfile, strip_hex=strip_hex, moretry=moretry):
                 break
 
-    def _files_identical_try(self, fn1: str, fn2: str, is_logfile: bool, moretry: bool) -> bool:
+    def _files_identical_try(self, fn1: str, fn2: str, is_logfile: bool, strip_hex: bool,
+                             moretry: bool) -> bool:
         # If moretry, then return true to try again
         try:
             f1 = open(  # pylint: disable=consider-using-with
@@ -2234,6 +2322,7 @@ class VlTest:
                                              fn1=fn1,
                                              fn2=fn2,
                                              is_logfile=is_logfile,
+                                             strip_hex=strip_hex,
                                              moretry=moretry)
         if f1:
             f1.close()
@@ -2242,7 +2331,7 @@ class VlTest:
         return again
 
     def _files_identical_reader(self, f1, f2, fn1: str, fn2: str, is_logfile: bool,
-                                moretry: bool) -> None:
+                                strip_hex: bool, moretry: bool) -> None:
         # If moretry, then return true to try again
         l1s = f1.readlines()
         l2s = f2.readlines() if f2 else []
@@ -2272,10 +2361,13 @@ class VlTest:
                 line = re.sub(r'\r', '<#013>', line)
                 line = re.sub(r'Command Failed[^\n]+', 'Command Failed', line)
                 line = re.sub(r'Version: Verilator[^\n]+', 'Version: Verilator ###', line)
+                line = re.sub(r'"version": "[^"]+"', '"version": "###"', line)
                 line = re.sub(r'CPU Time: +[0-9.]+ seconds[^\n]+', 'CPU Time: ###', line)
                 line = re.sub(r'\?v=[0-9.]+', '?v=latest', line)  # warning URL
                 line = re.sub(r'_h[0-9a-f]{8}_', '_h########_', line)
                 line = re.sub(r'%Error: /[^: ]+/([^/:])', r'%Error: .../\1',
+                              line)  # Avoid absolute paths
+                line = re.sub(r'("file://)/[^: ]+/([^/:])', r'\1/.../\2',
                               line)  # Avoid absolute paths
                 line = re.sub(r' \/[^ ]+\/verilated_std.sv', ' verilated_std.sv', line)
                 #
@@ -2285,6 +2377,13 @@ class VlTest:
                     break  # Trunc rest
                 l1o.append(line)
             #
+            l1s = l1o
+
+        if strip_hex:
+            l1o = []
+            for line in l1s:
+                line = re.sub(r'\b0x[0-9a-f]+', '0x#', line)
+                l1o.append(line)
             l1s = l1o
 
         for lineno_m1 in range(0, max(len(l1s), len(l2s))):
@@ -2382,6 +2481,7 @@ class VlTest:
         out = test.run_capture(cmd, check=True)
         if out != '':
             print(out)
+            self.copy_if_golden(fn1, fn2)
             self.error("SAIF files don't match!")
 
     def _vcd_read(self, filename: str) -> str:
@@ -2574,6 +2674,11 @@ class VlTest:
             regexp=r'.*',
             lineno_adjust=-9999,  #
             lines=None) -> None:  #'#, #-#'
+
+        if not os.path.exists(test.root + "/.git"):
+            self.skip("Not in a git repository")
+            return
+
         temp_fn = out_filename
         temp_fn = re.sub(r'.*/', '', temp_fn)
         temp_fn = self.obj_dir + "/" + temp_fn
@@ -2610,6 +2715,7 @@ class VlTest:
                 fhw.write("   :emphasize-lines: " + emph + "\n")
             fhw.write("\n")
             for line in out:
+                line = re.sub(r' +$', '', line)
                 fhw.write(line)
 
         self.files_identical(temp_fn, out_filename)
@@ -2679,6 +2785,8 @@ def _parameter(param: str) -> None:
             sys.exit("%Error: Expected number following " + _Parameter_Next_Level + ": " + param)
         Args.passdown_verilator_flags.append(param)
         _Parameter_Next_Level = None
+    elif re.match(r'^(\+verilator\+.*)', param):
+        Args.passdown_verilated_flags.append(param)
     elif re.search(r'\.py', param):
         Arg_Tests.append(param)
     elif re.match(r'^-?(-debugi|-dumpi)', param):
@@ -2836,6 +2944,7 @@ if __name__ == '__main__':
 
     (Args, rest) = parser.parse_known_intermixed_args()
     Args.passdown_verilator_flags = []
+    Args.passdown_verilated_flags = []
 
     for arg in rest:
         _parameter(arg)
@@ -2887,6 +2996,7 @@ if __name__ == '__main__':
 
     forker = Forker(Args.jobs)
 
+    Args.driver_build_jobs = None
     if len(Arg_Tests) >= 2 and Args.jobs >= 2:
         # Read supported into master process, so don't call every subprocess
         Capabilities.warmup_cache()
@@ -2895,5 +3005,8 @@ if __name__ == '__main__':
         print("== Many jobs; redirecting STDIN", file=sys.stderr)
         #
         sys.stdin = open("/dev/null", 'r', encoding="utf8")  # pylint: disable=consider-using-with
+    else:
+        # Speed up single-test makes
+        Args.driver_build_jobs = calc_jobs()
 
     run_them()

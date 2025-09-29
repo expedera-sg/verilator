@@ -18,9 +18,8 @@ Verilator may be used in five major ways:
 * With the :vlopt:`--lint-only` option, Verilator will lint the design to
   check for warnings but will not typically create any output files.
 
-* With the :vlopt:`--xml-only` option, Verilator will create XML output
-  that may be used to feed into other user-designed tools.  See
-  :file:`docs/xml.rst` in the distribution.
+* With the :vlopt:`--json-only` option, Verilator will create JSON output
+  that may be used to feed into other user-designed tools.
 
 * With the :vlopt:`-E` option, Verilator will preprocess the code according
   to IEEE preprocessing rules and write the output to standard out. This
@@ -66,6 +65,40 @@ Once a model is built, the next step is typically for the user to run it,
 see :ref:`Simulating`.
 
 
+.. _Finding and Binding Modules:
+
+Finding and Binding Modules
+===========================
+
+Verilator provides several mechanisms to find the source code containing a
+module, primitive, interface, or program ("module" in this section) and
+bind them to an instantiation.  These capabilities are similar to the
+"Precompiling in a single-pass" use model described in IEEE 1800-2023
+33.5.1, although `config` is not yet supported.
+
+Verilator first reads all files provided on the command line and
+:vlopt:`-f` files, and parses all modules within.  Each module is assigned
+to the most recent library specified with :vlopt:`-work`, thus `-work liba
+a.v -work libb b.v` will assign modules in `a.v` to `liba` and modules in
+`b.v` to `libb`.
+
+If a module is not defined from a file on the command-line, Verilator
+attempts to find a filename constructed from the module name using
+:vlopt:`-y` and `+libext`.
+
+Binding begins with the :vlopt:`--top` module, if provided. If not provided
+Verilator attempts to figure out the top module itself, and if multiple
+tops result a :option:`MULTITOP` warning is issued which may be suppressed
+(see details in :option:`MULTITOP`).
+
+Verilator will attempt to bind lower unresolved instances first in the same
+library name as the parent's instantiation library, and if not found search
+globally across all libraries in the order modules were declared.  This
+allows otherwise conflicting duplicate module names between libraries to
+coexist uniquely within each library name.  When IEEE `config use` is
+supported, more complicated selections will be able to be specified.
+
+
 .. _Hierarchical Verilation:
 
 Hierarchical Verilation
@@ -94,7 +127,7 @@ There are two ways to mark a module:
 
 * Write :option:`/*verilator&32;hier_block*/` metacomment in HDL code.
 
-* Add a :option:`hier_block` line in the :ref:`Configuration Files`.
+* Add a :option:`hier_block` line in the :ref:`Verilator Control Files`.
 
 Then pass the :vlopt:`--hierarchical` option to Verilator.
 
@@ -112,8 +145,6 @@ Hierarchy blocks have some limitations, including:
 
 * The hierarchy block cannot be accessed using dot (.) from the upper
   module(s) or other hierarchy blocks.
-
-* Signals in the block cannot be traced.
 
 * Modport cannot be used at the hierarchical block boundary.
 
@@ -221,7 +252,7 @@ model, it may be beneficial to performance to adjust the
 influences the partitioning of the model by adjusting the assumed execution
 time of DPI imports.
 
-When using :vlopt:`--trace` to perform VCD tracing, the VCD trace
+When using :vlopt:`--trace-vcd` to perform VCD tracing, the VCD trace
 construction is parallelized using the same number of threads as specified
 with :vlopt:`--threads`, and is executed on the same thread pool as the model.
 
@@ -243,11 +274,14 @@ trace. FST tracing can utilize up to 2 offload threads, so there is no use
 of setting :vlopt:`--trace-threads` higher than 2 at the moment.
 
 When running a multithreaded model, the default Linux task scheduler often
-works against the model by assuming short-lived threads and thus
-it often schedules threads using multiple hyperthreads within the same
-physical core. For best performance, use the :command:`numactl` program to
-(when the threading count fits) select unique physical cores on the same
-socket. The same applies for :vlopt:`--trace-threads` as well.
+works against the model by assuming short-lived threads and thus it often
+schedules threads using multiple hyperthreads within the same physical
+core. If there is no affinity already set, on Linux only, Verilator
+attempts to set thread-to-processor affinity in a reasonable way.
+
+For best performance, use the :command:`numactl` program to (when the
+threading count fits) select unique physical cores on the same socket. The
+same applies for :vlopt:`--trace-threads` as well.
 
 As an example, if a model was Verilated with
 :vlopt:`--threads 4 <--threads>`, we consult:
@@ -290,8 +324,8 @@ and must be called only by the eval thread.
 If using :vlopt:`--sc`, the SystemC kernel is not thread-safe; therefore,
 the eval thread and main thread must be the same.
 
-If using :vlopt:`--trace`, the tracing classes must be constructed and
-called from the main thread.
+If using :vlopt:`--trace-vcd` or other trace options, the tracing classes
+must be constructed and called from the main thread.
 
 If using :vlopt:`--vpi`, since SystemVerilog VPI was not architected by
 IEEE to be multithreaded, Verilator requires all VPI calls are only made
@@ -367,10 +401,11 @@ Verilate in CMake
 .. code-block:: CMake
 
      verilate(target SOURCES source ... [TOP_MODULE top] [PREFIX name]
-              [TRACE] [TRACE_FST] [SYSTEMC] [COVERAGE]
+              [COVERAGE] [SYSTEMC]
+              [TRACE_FST] [TRACE_SAIF] [TRACE_VCD] [TRACE_THREADS num]
               [INCLUDE_DIRS dir ...] [OPT_SLOW ...] [OPT_FAST ...]
               [OPT_GLOBAL ..] [DIRECTORY dir] [THREADS num]
-              [TRACE_THREADS num] [VERILATOR_ARGS ...])
+              [VERILATOR_ARGS ...])
 
 Lowercase and ... should be replaced with arguments; the uppercase parts
 delimit the arguments and can be passed in any order or left out entirely
@@ -443,10 +478,6 @@ SystemC include directories and link to the SystemC libraries.
 
    Optional. Enable a multithreaded model; see :vlopt:`--threads`.
 
-.. describe:: TRACE_THREADS
-
-   Optional. Enable multithreaded FST trace; see :vlopt:`--trace-threads`.
-
 .. describe:: TOP_MODULE
 
    Optional. Sets the name of the top module. Defaults to the name of the
@@ -454,8 +485,7 @@ SystemC include directories and link to the SystemC libraries.
 
 .. describe:: TRACE
 
-   Optional. Enables VCD tracing if present, equivalent to "VERILATOR_ARGS
-   --trace".
+   Deprecated. Same as TRACE_VCD, which should be used instead.
 
 .. describe:: TRACE_FST
 
@@ -466,6 +496,15 @@ SystemC include directories and link to the SystemC libraries.
 
    Optional. Enables SAIF tracing if present, equivalent to "VERILATOR_ARGS
    --trace-saif".
+
+.. describe:: TRACE_THREADS
+
+   Optional. Enable multithreaded FST trace; see :vlopt:`--trace-threads`.
+
+.. describe:: TRACE_VCD
+
+   Optional. Enables VCD tracing if present, equivalent to "VERILATOR_ARGS
+   --trace-vcd".
 
 .. describe:: VERILATOR_ARGS
 

@@ -12,7 +12,7 @@ import datetime
 
 test.scenarios('dist')
 
-RELEASE_OK_RE = r'(^test_regress/t/.*\.(cpp|h|mk|sv|v|vlt)|^test_regress/t_done/|^examples/)'
+RELEASE_OK_RE = r'(^test_regress/t/.*\.(cpp|h|map|mk|sv|v|vlt)|^test_regress/t_done/|^examples/)'
 
 EXEMPT_AUTHOR_RE = r'(^ci/|^nodist/fastcov.py|^nodist/fuzzer|^test_regress/t/.*\.(cpp|h|v|vlt)$)'
 
@@ -30,6 +30,7 @@ EXEMPT_FILES_LIST = """
     docs/CONTRIBUTING.rst
     docs/CONTRIBUTORS
     docs/README.rst
+    docs/security.rst
     docs/_static
     docs/gen
     docs/spelling.txt
@@ -44,21 +45,20 @@ EXEMPT_FILES_LIST = """
     test_regress/t/t_incr_void.v
     test_regress/t/tsub/t_flag_f_tsub.v
     test_regress/t/tsub/t_flag_f_tsub_inc.v
+    test_regress/t/uvm/dpi
     test_regress/t/uvm/uvm_pkg_all.svh
     test_regress/t/uvm/uvm_pkg_todo.svh
     verilator.pc.in
     """
 
-root = ".."
-
 Exempt_Files_List_Re = list(map(re.escape, EXEMPT_FILES_LIST.split()))
 Exempt_Files_List_Re = '^(' + '|'.join(Exempt_Files_List_Re) + ")"
 # pprint(Exempt_Files_List_Re)
 
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
-cmd = "cd " + root + " && git ls-files --exclude-standard"
+cmd = "cd " + test.root + " && git ls-files --exclude-standard"
 out = test.run_capture(cmd)
 
 year = datetime.datetime.now().year
@@ -73,7 +73,7 @@ for filename in out.split():
     files[filename] = True
 
 for filename in files:
-    open_filename = os.path.join(root, filename)
+    open_filename = os.path.join(test.root, filename)
     if not os.path.exists(open_filename):
         continue
     with open(open_filename, 'r', encoding="utf8") as fh:

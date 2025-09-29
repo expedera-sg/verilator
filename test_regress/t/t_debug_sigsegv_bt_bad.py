@@ -10,6 +10,7 @@
 import vltest_bootstrap
 
 test.scenarios('vlt')
+
 if 'VERILATOR_TEST_NO_GDB' in os.environ:
     test.skip("Skipping due to VERILATOR_TEST_NO_GDB")
 if not test.have_gdb:
@@ -17,7 +18,7 @@ if not test.have_gdb:
 
 test.lint(verilator_flags2=["--lint-only --debug --gdbbt --debug-sigsegv"],
           sanitize=0,
-          fails=test.vlt_all)
+          fails='any')
 
 test.file_grep(test.compile_log_filename, r'Program received signal SIGSEGV')
 test.file_grep(test.compile_log_filename, r'in V3Options::')

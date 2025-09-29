@@ -11,11 +11,11 @@ import vltest_bootstrap
 
 test.scenarios('simulator')
 
-test.compile(verilator_flags2=["-Wno-UNOPTTHREADS", "--stats", "--coverage", "--trace"])
+test.compile(verilator_flags2=["-Wno-UNOPTTHREADS", "--stats", "--coverage", "--trace-vcd"])
 
 test.execute()
 
 if test.vlt:
-    test.file_grep(test.stats, r'Optimizations, Const bit op reduction\s+(\d+)', 620)
+    test.file_grep(test.stats, r'Optimizations, Const bit op reduction\s+(\d+)', 478)
 
 test.passes()

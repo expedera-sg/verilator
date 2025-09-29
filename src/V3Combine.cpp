@@ -113,8 +113,8 @@ class CombineVisitor final : VNVisitor {
                 if (oldp->user3()) std::swap(oldp, newp);
 
                 // Something is being replaced
-                UINFO(9, "Replacing " << oldp << endl);
-                UINFO(9, "     with " << newp << endl);
+                UINFO(9, "Replacing " << oldp);
+                UINFO(9, "     with " << newp);
                 ++m_cfuncsCombined;
                 replaced = true;
 
@@ -150,6 +150,7 @@ class CombineVisitor final : VNVisitor {
         return replaced;
     }
 
+    // cppcheck-suppress constParameterPointer
     void process(AstNetlist* netlistp) {
         // First, remove empty functions. We need to do this separately, because removing
         // calls can change the hashes of the callers.
@@ -233,7 +234,7 @@ public:
 // Combine class functions
 
 void V3Combine::combineAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     CombineVisitor::apply(nodep);
     V3Global::dumpCheckGlobalTree("combine", 0, dumpTreeEitherLevel() >= 3);
 }

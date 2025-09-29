@@ -39,11 +39,21 @@ class CMakeEmitter final {
     template <typename T_List>
     static string cmake_list(const T_List& strs) {
         string s;
-        for (auto it = strs.begin(); it != strs.end(); ++it) {
+        for (const std::string& itr : strs) {
+            if (!s.empty()) s += ' ';
             s += '"';
-            s += V3OutFormatter::quoteNameControls(*it);
+            s += V3OutFormatter::quoteNameControls(itr);
             s += '"';
-            if (it != strs.end()) s += ' ';
+        }
+        return s;
+    }
+    static string cmake_list(const VFileLibList& strs) {
+        string s;
+        for (const VFileLibName& itr : strs) {
+            if (!s.empty()) s += ' ';
+            s += '"';
+            s += V3OutFormatter::quoteNameControls(itr.filename());
+            s += '"';
         }
         return s;
     }
@@ -110,15 +120,12 @@ class CMakeEmitter final {
         cmake_set_raw(*of, name + "_TIMING", v3Global.usesTiming() ? "1" : "0");
         *of << "# Threaded output mode?  1/N threads (from --threads)\n";
         cmake_set_raw(*of, name + "_THREADS", cvtToStr(v3Global.opt.threads()));
-        *of << "# VCD Tracing output mode?  0/1 (from --trace)\n";
-        cmake_set_raw(*of, name + "_TRACE_VCD",
-                      (v3Global.opt.trace() && v3Global.opt.traceFormat().vcd()) ? "1" : "0");
         *of << "# FST Tracing output mode? 0/1 (from --trace-fst)\n";
-        cmake_set_raw(*of, name + "_TRACE_FST",
-                      (v3Global.opt.trace() && v3Global.opt.traceFormat().fst()) ? "1" : "0");
+        cmake_set_raw(*of, name + "_TRACE_FST", (v3Global.opt.traceEnabledFst()) ? "1" : "0");
         *of << "# SAIF Tracing output mode? 0/1 (from --trace-saif)\n";
-        cmake_set_raw(*of, name + "_TRACE_SAIF",
-                      (v3Global.opt.trace() && v3Global.opt.traceFormat().saif()) ? "1" : "0");
+        cmake_set_raw(*of, name + "_TRACE_SAIF", (v3Global.opt.traceEnabledSaif()) ? "1" : "0");
+        *of << "# VCD Tracing output mode?  0/1 (from --trace-vcd)\n";
+        cmake_set_raw(*of, name + "_TRACE_VCD", (v3Global.opt.traceEnabledVcd()) ? "1" : "0");
 
         *of << "\n### Sources...\n";
         std::vector<string> classes_fast;
@@ -146,36 +153,9 @@ class CMakeEmitter final {
             }
         }
 
-        global.emplace_back("${VERILATOR_ROOT}/include/verilated.cpp");
-        if (v3Global.dpi()) {  //
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_dpi.cpp");
-        }
-        if (v3Global.opt.vpi()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_vpi.cpp");
-        }
-        if (v3Global.opt.savable()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_save.cpp");
-        }
-        if (v3Global.opt.coverage()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_cov.cpp");
-        }
-        if (v3Global.opt.trace()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/" + v3Global.opt.traceSourceBase()
-                                + "_c.cpp");
-        }
-        if (v3Global.usesProbDist()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_probdist.cpp");
-        }
-        if (v3Global.usesTiming()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_timing.cpp");
-        }
-        if (v3Global.useRandomizeMethods()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_random.cpp");
-        }
-        global.emplace_back("${VERILATOR_ROOT}/include/verilated_threads.cpp");
-        if (v3Global.opt.usesProfiler()) {
-            global.emplace_back("${VERILATOR_ROOT}/include/verilated_profiler.cpp");
-        }
+        for (const string& cpp : v3Global.verilatedCppFiles())
+            global.emplace_back("${VERILATOR_ROOT}/include/"s + cpp);
+
         if (!v3Global.opt.libCreate().empty()) {
             global.emplace_back(v3Global.opt.makeDir() + "/" + v3Global.opt.libCreate() + ".cpp");
         }
@@ -211,20 +191,22 @@ class CMakeEmitter final {
                 *of << "target_link_libraries(${TOP_TARGET_NAME}  PRIVATE " << prefix << ")\n";
                 if (!children.empty()) {
                     *of << "target_link_libraries(" << prefix << " INTERFACE";
-                    for (const auto& childr : children) *of << " " << (childr)->hierPrefix();
+                    for (const V3HierBlock* const childp : children) {
+                        *of << " " << childp->hierPrefix();
+                    }
                     *of << ")\n";
                 }
                 *of << "verilate(" << prefix << " PREFIX " << prefix << " TOP_MODULE "
                     << hblockp->modp()->name() << " DIRECTORY "
                     << v3Global.opt.makeDir() + "/" + prefix << " SOURCES ";
-                for (const auto& childr : children) {
-                    *of << " " << v3Global.opt.makeDir() + "/" + childr->hierWrapperFilename(true);
+                for (const V3HierBlock* const childp : children) {
+                    *of << " " << v3Global.opt.makeDir() + "/" + childp->hierWrapperFilename(true);
                 }
                 *of << " ";
                 const string vFile = hblockp->vFileIfNecessary();
                 if (!vFile.empty()) *of << vFile << " ";
-                const V3StringList& vFiles = v3Global.opt.vFiles();
-                for (const string& i : vFiles) *of << V3Os::filenameRealPath(i) << " ";
+                for (const auto& i : v3Global.opt.vFiles())
+                    *of << V3Os::filenameRealPath(i.filename()) << " ";
                 *of << " VERILATOR_ARGS ";
                 *of << "-f " << hblockp->commandArgsFilename(true)
                     << " -CFLAGS -fPIC"  // hierarchical block will be static, but may be linked
@@ -236,7 +218,7 @@ class CMakeEmitter final {
                 << v3Global.rootp()->topModulep()->name() << " DIRECTORY "
                 << v3Global.opt.makeDir() << " SOURCES ";
             for (const auto& itr : *planp) {
-                *of << " " << v3Global.opt.makeDir() + "/" + itr.second->hierWrapperFilename(true);
+                *of << " " << v3Global.opt.makeDir() + "/" + itr.second.hierWrapperFilename(true);
             }
             *of << " " << cmake_list(v3Global.opt.vFiles());
             *of << " VERILATOR_ARGS ";
@@ -251,6 +233,6 @@ public:
 };
 
 void V3EmitCMake::emit() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     const CMakeEmitter emitter;
 }

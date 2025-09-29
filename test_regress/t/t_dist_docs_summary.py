@@ -11,22 +11,23 @@ import vltest_bootstrap
 
 test.scenarios('dist')
 
-root = ".."
-
 Waivers = [
     '+verilator+prof+threads+file+',  # Deprecated
     '+verilator+prof+threads+start+',  # Deprecated
     '+verilator+prof+threads+window+',  # Deprecated
+    '-clk',  # Deprecated
+    '-fdfg-synthesize-all',  # Mostly used for testing
     '-fno-',  # Documented differently
+    '-no-clk',  # Deprecated
     '-no-lineno',  # Deprecated
     '-no-order-clock-delay',  # Deprecated
-    '-prof-threads',  # Deprecated)
+    '-prof-threads',  # Deprecated
 ]
 
 
-def get_summary_opts(root):
+def get_summary_opts():
     args = {}
-    for filename in test.glob_some(root + "/bin/*"):
+    for filename in test.glob_some(test.root + "/bin/*"):
         with open(filename, "r", encoding="latin-1") as fh:
             on = False
             lineno = 0
@@ -52,9 +53,9 @@ def get_summary_opts(root):
     return args
 
 
-def get_docs_opts(root):
+def get_docs_opts():
     args = {}
-    for filename in test.glob_some(root + "/docs/guide/*.rst"):
+    for filename in test.glob_some(test.root + "/docs/guide/*.rst"):
         with open(filename, "r", encoding="latin-1") as fh:
             lineno = 0
             for line in fh:
@@ -90,11 +91,11 @@ def alt_names(opt):
     return opts
 
 
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
-sums = get_summary_opts(root)
-docs = get_docs_opts(root)
+sums = get_summary_opts()
+docs = get_docs_opts()
 
 both = {}
 both.update(sums)

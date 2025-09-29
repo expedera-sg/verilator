@@ -1,9 +1,9 @@
 .. Copyright 2003-2025 by Wilson Snyder.
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
-*******************
-Errors and Warnings
-*******************
+=====================
+ Errors and Warnings
+=====================
 
 .. _Disabling Warnings:
 
@@ -37,7 +37,7 @@ Warnings may be disabled in multiple ways:
    propagate upwards to any parent file (file that included the file with
    the lint_off).
 
-#. Disable the warning using :ref:`Configuration Files` with a
+#. Disable the warning using :ref:`Verilator Control Files` with a
    :option:`lint_off` command.  This is useful when a script suppresses
    warnings, and the Verilog source should not be changed.  This method also
    allows matching on the warning text.
@@ -68,6 +68,10 @@ source code corresponding to the error, prefixed by the line number and a "
 | ".  Following this is typically an arrow and ~ pointing at the error on
 the source line directly above.
 
+Instead of parsing this text diagnostic output, tools that need to
+understand Verilator's warning output should read the SARIF JSON output
+created with :vlopt:`--diagnostics-sarif`.
+
 
 List Of Warnings
 ================
@@ -86,6 +90,8 @@ List Of Warnings
    Limitations`.
 
 
+   .. t_dist_docs_style restart_sort
+
 .. option:: ALWCOMBORDER
 
    .. TODO better example
@@ -97,9 +103,30 @@ List Of Warnings
    .. code-block:: sv
 
          always_comb begin
-            a = b;
-            b = 1;
+           a = b;
+           b = 1;
          end
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+
+.. option:: ALWNEVER
+
+   Warning that an `always @*` statement has no variables being read,
+   therefore the event list is empty, and as there are no events to wake
+   the process up, the always will never execute.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_ALWNEVER_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_ALWNEVER_msg.rst
+
+   To repair, assuming the intent was to execute the statements at e.g.
+   time zero, instead use an `always_comb` statement.
 
    Ignoring this warning will only suppress the lint check; it will
    simulate correctly.
@@ -142,6 +169,29 @@ List Of Warnings
    This warning is issued only if Verilator is run with :vlopt:`--no-timing`.
 
 
+.. option:: ASSIGNEQEXPR
+
+   Warning that an assignment with `=` appears in a complex expression.
+   The intent may have been to use `==`, or, if `=` is correct this may be
+   a readability issue.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_ASSIGNEQEXPR_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_ASSIGNEQEXPR_msg.rst
+
+   To repair, make the assignment into a separate statement.
+
+   Disabled by default as this is a code-style warning; it will simulate
+   correctly.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+
 .. option:: ASSIGNIN
 
    .. TODO better example
@@ -165,6 +215,28 @@ List Of Warnings
    'pragma protect'.  Third-party pragmas not defined by IEEE 1800-2023 are
    ignored.
 
+   This error may be disabled with a lint_off BADSTDPRAGMA metacomment.
+
+   Ignoring this warning will cause the pragma to be ignored.
+
+
+.. option:: BADVLTPRAGMA
+
+   An error that a `/*verilator ...*/` metacomment pragma is badly formed
+   or not understood.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_BADVLTPRAGMA_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_BADVLTPRAGMA_msg.rst
+
+   This error may be disabled with a lint_off BADVLTPRAGMA metacomment.
+
+   Ignoring this warning will cause the pragma to be ignored.
+
 
 .. option:: BLKANDNBLK
 
@@ -183,23 +255,32 @@ List Of Warnings
    public task, or when the blocking and non-blocking assignments have
    non-overlapping bits and structure members.
 
+   From Verilator 5.038, this warning is only issued when Verilator can't prove that
+   the assignments are to non-overlapping sub-parts, and the blocking
+   assignment is in combinational logic (which is the case where simulation
+   results might differ from other simulators). Review any BLKANDNBLK
+   cases carefully after this version, and sign them off as
+   described above, only if know for sure the updates are not to overlapping
+   parts of the signal.
+
    Generally, this is caused by a register driven by both combo logic and a
    flop:
 
    .. code-block:: sv
 
-         logic [1:0] foo;
-         always @(posedge clk)  foo[0] <= ...
-         always_comb foo[1] = ...
+         logic [3:0] foo;
+         always @(posedge clk) foo[index] <= ...  // With index != 0
+         always_comb foo[0] = ...
 
    Instead, use a different register for the flop:
 
    .. code-block:: sv
 
-         logic [1:0] foo;
-         always @(posedge clk)  foo_flopped[0] <= ...
-         always_comb foo[0] = foo_flopped[0];
-         always_comb foo[1] = ...
+         logic [3:0] foo;
+         logic [3:1] foo_flopped;
+         always @(posedge clk) foo_flopped[index] <= ... // With index != 0
+         always_comb foo[0] = ...
+         always_comb foo[3:1] = foo_flopped;
 
    Or, this may also avoid the error:
 
@@ -217,11 +298,11 @@ List Of Warnings
    .. code-block:: sv
 
          always @(posedge clk)
-            if (~reset_l)
-                for (i=0; i<`ARRAY_SIZE; i++)
-                    array[i] <= 0;  // Non-blocking assignment inside loop
-            else
-                array[address] <= data;
+           if (~reset_l)
+             for (i=0; i<`ARRAY_SIZE; i++)
+               array[i] <= 0;  // Non-blocking assignment inside loop
+           else
+             array[address] <= data;
 
    While this is supported in typical synthesizeable code (including the
    example above), some complicated cases are not supported. Namely:
@@ -296,8 +377,8 @@ List Of Warnings
    Unique case statements that select on an enumerated variable, where all
    of the enumerated values are covered by case items, are considered
    complete even if the case statement does not cover illegal
-   non-enumerated values (IEEE 1800-2023 12.5.3).  To check that illegal
-   values are not hit, use :vlopt:`--assert`.
+   non-enumerated values (IEEE 1800-2023 12.5.3).  Verilator checks that
+   illegal values are not hit, unless :vlopt:`--no-assert-case` was used.
 
    Ignoring this warning will only suppress the lint check; it will
    simulate correctly.
@@ -335,8 +416,8 @@ List Of Warnings
 
    Warns that it is better style to use casez, and "?" in place of
    "x"'s.  See
-   `http://www.sunburst-design.com/papers/CummingsSNUG1999Boston_FullParallelCase_rev1_1.pdf
-   <http://www.sunburst-design.com/papers/CummingsSNUG1999Boston_FullParallelCase_rev1_1.pdf>`_
+   `http://www.sunburst-design.com/papers/CummingsSNUG1999Boston_FullParallelCase.pdf
+   <http://www.sunburst-design.com/papers/CummingsSNUG1999Boston_FullParallelCase.pdf>`_
 
    Ignoring this warning will only suppress the lint check; it will
    simulate correctly.
@@ -410,8 +491,8 @@ List Of Warnings
    is suppressed, Verilator, like synthesis, will convert this to a
    non-delayed assignment, which may result in logic races or other
    nasties.  See
-   `http://www.sunburst-design.com/papers/CummingsSNUG2000SJ_NBA_rev1_2.pdf
-   <http://www.sunburst-design.com/papers/CummingsSNUG2000SJ_NBA_rev1_2.pdf>`_
+   `http://www.sunburst-design.com/papers/CummingsSNUG2000SJ_NBA.pdf
+   <http://www.sunburst-design.com/papers/CummingsSNUG2000SJ_NBA.pdf>`_
 
    Ignoring this warning may make Verilator simulations differ from other
    simulators.
@@ -421,10 +502,21 @@ List Of Warnings
 
    Warns that Verilator does not support certain forms of
    :code:`constraint`, :code:`constraint_mode`, or :code:`rand_mode`, and
-   the construct was are ignored.
+   the construct was ignored.
 
    Ignoring this warning may make Verilator randomize() simulations differ
    from other simulators.
+
+
+.. option:: CONSTWRITTEN
+
+   Error that a :code:`const` data typed variable is being assigned a
+   value.
+
+   IEEE 1800-2023 6.20.6 requires this error.
+
+   Suppressing this error will suppress the error message check; it will
+   simulate as if the :code:`const` as not present.
 
 
 .. option:: CONTASSREG
@@ -449,7 +541,7 @@ List Of Warnings
 
    Warns that Verilator does not support certain forms of
    :code:`covergroup`, :code:`coverpoint`, and coverage options, and the
-   construct was are ignored.
+   construct was ignored.
 
    Disabling the :option:`UNSUPPORTED` error also disables this warning.
 
@@ -470,6 +562,32 @@ List Of Warnings
 
    Disabled by default as this is a code-style warning; it will simulate
    correctly.
+
+
+.. option:: DEFOVERRIDE
+
+   Warns that a macro definition within the code is being overridden by a
+   command line directive:
+
+   For example, running Verilator with :code:`<+define+\<DUP\>=\<def2\>>` and
+
+   .. code-block:: sv
+      :linenos:
+      :emphasize-lines: 1
+
+         `define DUP def2 //<--- Warning
+
+   Results in:
+
+   .. code-block::
+
+         %Warning-DEFOVERRIDE: example.v1:20: Overriding define: 'DEF' with value: 'def2' to existing command line define value: 'def1'
+                      ... Location of previous definition, with value: '50'
+
+   While not explicitly stated in the IEEE 1800-2023 standard, this warning
+   tracks with the other simulators' behavior of overriding macro
+   definitions within code files with the definition passed in through
+   the command line.
 
 
 .. option:: DEFPARAM
@@ -493,7 +611,7 @@ List Of Warnings
       :emphasize-lines: 5
 
          module parameterized
-            #(parameter int MY_PARAM = 0);
+           #(parameter int MY_PARAM = 0);
          endmodule
          module upper;
            defparam p0.MY_PARAM = 1;  //<--- Warning
@@ -514,12 +632,12 @@ List Of Warnings
       :emphasize-lines: 6
 
          module parameterized
-            #(parameter int MY_PARAM = 0);
+           #(parameter int MY_PARAM = 0);
          endmodule
          module upper
            parameterized
-              #(.MY_PARAM(1))  //<--- Repaired
-              p0();
+             #(.MY_PARAM(1))  //<--- Repaired
+             p0();
          endmodule
 
    Other tools with similar warnings: Verible's forbid_defparam_rule.
@@ -599,7 +717,7 @@ List Of Warnings
    generated C++ code to add appropriate prints to see what is going on.
 
 
-.. option:: ENDCAPSULATED
+.. option:: ENCAPSULATED
 
    Warns that a class member is declared :code:`local` or
    :code:`protected`, but is being accessed from outside that class (if
@@ -644,6 +762,28 @@ List Of Warnings
    Other tools with similar warnings: Verible's mismatched-labels,
    "Begin/end block labels must match." or "Matching begin label is
    missing."
+
+
+.. option:: ENUMITEMWIDTH
+
+   An error that an enum item value is being assigned from a value which
+   would be truncated (similar to :option:`WIDTHTRUNC`), or from a sized
+   literal constant with a different bit width (similar to
+   :option:`WIDTHTRUNC` or :option:`WIDTHEXPAND`).  IEEE requires this
+   error, but it may be disabled.
+
+   Faulty example:
+
+   .. code-block:: sv
+      :linenos:
+      :emphasize-lines: 2
+
+         typedef enum [3:0] {
+           WRONG_WIDTH = 33'h3  //<--- Warning
+         } enum_t;
+
+   To repair, correct the size of the item's value directly, or use a cast,
+   so the resulting width matches the enum's width.
 
 
 .. option:: ENUMVALUE
@@ -695,6 +835,25 @@ List Of Warnings
    with a newline."
 
 
+.. option:: FUNCTIMECTL
+
+   Error that a function contains a time-controlling statement or call of a
+   task.  IEEE 1800-2023 13.4 requires this error.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_FUNCTIMECTL_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_FUNCTIMECTL_msg.rst
+
+   Suppressing this error will only suppress the IEEE-required check; in
+   most cases Verilator treats functions and tasks identically and relies
+   on analysis to determine what functions/tasks need to allow time to
+   pass.
+
+
 .. option:: GENCLK
 
    Historical, never issued since version 5.000.
@@ -725,8 +884,8 @@ List Of Warnings
       :emphasize-lines: 2
 
          generate
-            if (PARAM == 1) begin  //<--- Warning
-            end
+           if (PARAM == 1) begin  //<--- Warning
+           end
 
    Results in:
 
@@ -742,8 +901,8 @@ List Of Warnings
       :emphasize-lines: 2
 
          generate
-            if (PARAM == 1) begin : gen_param_1  //<--- Repaired
-            end
+           if (PARAM == 1) begin : gen_param_1  //<--- Repaired
+           end
 
    Other tools with similar warnings: Verible's generate-label, "All
    generate block statements must have a label."
@@ -754,6 +913,25 @@ List Of Warnings
    Warns that the top module is marked as a hierarchy block by the
    :option:`/*verilator&32;hier_block*/` metacomment, which is not legal.
    This setting on the top module will be ignored.
+
+
+.. option:: HIERPARAM
+
+   An error that a hierarchical value or function is being used to assign a parameter.
+   IEEE 1800-2023 6.20.2 requires this error.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_HIERPARAM_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_HIERPARAM_msg.rst
+
+   Suppressing this error may allow some hierarchical references to work (especially hierarchical
+   references into interface references), however not all cases are possible, e.g. it cannot
+   reference the parameter of a lower module in a way that affects determining the parameters
+   that elaborate that lower module.
 
 
 .. option:: IFDEPTH
@@ -779,7 +957,7 @@ List Of Warnings
       :emphasize-lines: 5
 
          function int function_being_called_as_task;
-            return 1;
+           return 1;
          endfunction
 
          initial function_being_called_as_task();  //<--- Warning
@@ -798,7 +976,7 @@ List Of Warnings
       :emphasize-lines: 5
 
          function int function_being_called_as_task;
-            return 1;
+           return 1;
          endfunction
 
          initial void'(function_being_called_as_task());  //<--- Repaired
@@ -968,10 +1146,10 @@ List Of Warnings
       :emphasize-lines: 3
 
          task foo(int local_var);
-            fork
-               #10 local_var++;
-               #20 $display("local_var = %d", local_var);
-            join_none
+           fork
+             #10 local_var++;
+             #20 $display("local_var = %d", local_var);
+           join_none
          endtask
 
    In the example above 'local_var' exists only within scope of 'foo', once foo
@@ -993,19 +1171,19 @@ List Of Warnings
       :emphasize-lines: 4
 
          task foo(int local_var);
-            fork
-               #10 begin
-                  int forked_var = local_var;
-                  forked_var++;
-               end
-               #20 begin
-                  // Note that we are going to print the original value here,
-                  // as `forked_var`is a local copy that was initialized while
-                  // `foo` was still alive.
-                  int forked_var = local_var;
-                  $display("forked_var = %d", forked_var)
-               end
-            join_none
+           fork
+             #10 begin
+               int forked_var = local_var;
+               forked_var++;
+             end
+             #20 begin
+               // Note that we are going to print the original value here,
+               // as `forked_var`is a local copy that was initialized while
+               // `foo` was still alive.
+               int forked_var = local_var;
+               $display("forked_var = %d", forked_var)
+             end
+           join_none
          endtask
 
    If you need to share its state, another strategy is to ensure it's allocated
@@ -1018,10 +1196,10 @@ List Of Warnings
          int static_var;
 
          task foo();
-            fork
-               #10 static_var++;
-               #20 $display("static_var = %d", static_var);
-            join_none
+           fork
+             #10 static_var++;
+             #20 $display("static_var = %d", static_var);
+           join_none
          endtask
 
    However, if you need to be able to instantiate at runtime, the solution would be to
@@ -1033,28 +1211,26 @@ List Of Warnings
       :emphasize-lines: 2
 
          class Wrapper;
-            int m_var;
+           int m_var;
 
-            // Here we implicitly hold a reference to `this`
-            task foo();
-               fork
-                  #10 m_var++;
-                  #20 $display("this.m_var = %d", m_var);
-               join_none
-            endtask
+           // Here we implicitly hold a reference to `this`
+           task foo();
+             fork
+               #10 m_var++;
+               #20 $display("this.m_var = %d", m_var);
+             join_none
+           endtask
          endclass
 
          // Here we explicitly hold a handle to an object
          task bar(Wrapper wrapper);
-            fork
-               #10 wrapper.m_var++;
-               #20 $display("wrapper.m_var = %d", wrapper.m_var);
-            join_none
+           fork
+             #10 wrapper.m_var++;
+             #20 $display("wrapper.m_var = %d", wrapper.m_var);
+           join_none
          endtask
 
 .. option:: LITENDIAN
-
-   .. TODO better example
 
    The naming of this warning is in contradiction with the common
    interpretation of little endian. It was therefore renamed to
@@ -1062,7 +1238,7 @@ List Of Warnings
    backwards compatibility, new projects should use :option:`ASCRANGE`.
 
 
-.. option:: MINTYPMAX
+.. option:: MINTYPMAXDLY
 
    .. code-block:: sv
 
@@ -1093,8 +1269,8 @@ List Of Warnings
       :emphasize-lines: 3
 
          if (something)
-            statement_in_if;
-            statement_not_in_if;  //<--- Warning
+           statement_in_if;
+           statement_not_in_if;  //<--- Warning
 
    Results in:
 
@@ -1110,7 +1286,7 @@ List Of Warnings
       :emphasize-lines: 3
 
          if (something)
-            statement_in_if;
+           statement_in_if;
          statement_not_in_if;  //<--- Repaired
 
    Other tools with similar warnings: GCC -Wmisleading-indentation,
@@ -1129,6 +1305,19 @@ List Of Warnings
 
    Ignoring this warning will cause the more recent module definition to be
    discarded.
+
+
+.. option:: MODMISSING
+
+   .. TODO better example
+
+   Error that a module, typically referenced by a cell, was not found.
+   This is typically fatal, but may be suppressed in some linting
+   situations with missing libraries.
+
+   Ignoring this error will cause the cell definition to be discarded.
+   Simulation results will likely be wrong, so typically used only with
+   lint-only.
 
 
 .. option:: MULTIDRIVEN
@@ -1187,6 +1376,8 @@ List Of Warnings
    modules' signals seem identical, e.g., multiple modules with a "clk"
    input.
 
+   Ignoring this warning will make multiple tops, as described in (3) above.
+
 
 .. option:: NEEDTIMINGOPT
 
@@ -1210,6 +1401,21 @@ List Of Warnings
    simulate correctly.
 
 
+.. option:: NOEFFECT
+
+   Warns that the statement will have no effect and is roughly equivalent
+   to not being present.  This is only issued when it is "non-obvious",
+   e.g. a :code:`if (0)` will not result in this warning.
+
+   Faulty example:
+
+   .. code-block:: sv
+
+         foreach (array[]) begin ... end  //<--- Warning
+
+   For a fix, remove the statement.
+
+
 .. option:: NOLATCH
 
    .. TODO better example
@@ -1222,19 +1428,22 @@ List Of Warnings
    simulate correctly.
 
 
-.. option:: NOTIMING
-
-   Error when a timing-related construct that requires :vlopt:`--timing` has
-   been encountered. Issued only if Verilator is run with the
-   :vlopt:`--no-timing` option.
-
-
 .. option:: NONSTD
 
    Warns when a non-standard language feature is used that has a standard
    equivalent, which might behave differently in corner cases. For example
    :code:`$psprintf` system function is replaced by its standard equivalent
    :code:`$sformatf`.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+
+.. option:: NOTIMING
+
+   Error when a timing-related construct that requires :vlopt:`--timing` has
+   been encountered. Issued only if Verilator is run with the
+   :vlopt:`--no-timing` option.
 
 
 .. option:: NULLPORT
@@ -1260,6 +1469,28 @@ List Of Warnings
 
    Ignoring this warning will only suppress the lint check; it will
    simulate correctly.
+
+
+.. option:: PARAMNODEFAULT
+
+   An error that a parameter is being declared that has no default value,
+   and this is being done in a non-ANSI block while this is only legal in
+   ANSI-style `#(...)` declarations.  IEEE 1800-2023 6.20.1 requires this
+   error, but some simulators accept this syntax.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_PARAMNODEFAULT_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_PARAMNODEFAULT_msg.rst
+
+   To fix the issue, move to an ANSI-style declaration.
+
+   Suppressing this error will only suppress the IEEE-required check; it
+   will simulate correctly.
+
 
 .. option:: PINCONNECTEMPTY
 
@@ -1287,11 +1518,11 @@ List Of Warnings
 
    Faulty example:
 
-   .. include:: ../../docs/gen/ex_PKGNODECL_faulty.rst
+   .. include:: ../../docs/gen/ex_PINMISSING_faulty.rst
 
    Results in:
 
-   .. include:: ../../docs/gen/ex_PKGNODECL_msg.rst
+   .. include:: ../../docs/gen/ex_PINMISSING_msg.rst
 
    Repaired example:
 
@@ -1330,11 +1561,11 @@ List Of Warnings
        module a;
          localparam A=1;
          generate
-            if (A==0) begin
-               b b_inst1 (.x(1'b0));  //<--- error nonexistent port
-               b #(.PX(1'b0)) b_inst2 ();  //<--- error nonexistent parameter
-            end
-          endgenerate
+           if (A==0) begin
+             b b_inst1 (.x(1'b0));  //<--- error nonexistent port
+             b #(.PX(1'b0)) b_inst2 ();  //<--- error nonexistent parameter
+           end
+         endgenerate
        endmodule
 
        module b;
@@ -1347,6 +1578,15 @@ List Of Warnings
    due to the generate/if condition being false.
 
    This error may be disabled with a lint_off PINNOTFOUND metacomment.
+
+
+.. option:: PKGNODECL
+
+   Never issued since version 5.038.  Historically an error that a
+   package/class appears to have been referenced that has not yet been
+   declared.  According to IEEE 1800-2023 26.3, all packages must be
+   declared before being used. However, several standard libraries
+   including UVM violate this, and other tools do not warn.
 
 
 .. option:: PORTSHORT
@@ -1372,26 +1612,6 @@ List Of Warnings
    This error may be disabled with a lint_off PORTSHORT metacomment.
 
 
-.. option:: PKGNODECL
-
-   An error that a package/class appears to have been referenced that has
-   not yet been declared.  According to IEEE 1800-2023 26.3, all packages
-   must be declared before being used.
-
-   Faulty example:
-
-   .. include:: ../../docs/gen/ex_PKGNODECL_faulty.rst
-
-   Results in:
-
-   .. include:: ../../docs/gen/ex_PKGNODECL_msg.rst
-
-   Often the package is declared in its own header file.  In this case add
-   an include of that package header file to the referencing file.  (And
-   make sure you have header guards in the package's header file to prevent
-   multiple declarations of the package.)
-
-
 .. option:: PREPROCZERO
 
    Warns that a preprocessor \`ifdef/\`ifndef expression (added in IEEE
@@ -1415,6 +1635,40 @@ List Of Warnings
 
    The portable way to suppress this warning is to use a define value other
    than zero, when it is to be used in a preprocessor expression.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+
+.. option:: PROCASSINIT
+
+   Warns that the specified signal is given an initial value where it is
+   declared, and is also driven in an always process.  Typically such
+   initial values should instead be set using a reset signal inside the
+   process, to match requirements of ASIC synthesis tools.  However,
+   declaration initializers are a valid FPGA design idiom and therefore,
+   FPGA users may want to disable this warning.
+
+   Faulty example:
+
+   .. include:: ../../docs/gen/ex_PROCASSINIT_faulty.rst
+
+   Results in:
+
+   .. include:: ../../docs/gen/ex_PROCASSINIT_msg.rst
+
+   One possible fix, adding a reset to the always:
+
+   .. include:: ../../docs/gen/ex_PROCASSINIT_fixed.rst
+
+   Alternatively, use an initial block for the initialization:
+
+   .. code-block:: sv
+
+      initial flop_out = 1;  // <--- Fixed
+
+   Disabled by default as this is a code-style warning; it will simulate
+   correctly.
 
 
 .. option:: PROCASSWIRE
@@ -1447,8 +1701,21 @@ List Of Warnings
    inside the protected region will be partly checked for correctness but is
    otherwise ignored.
 
-   Suppressing the warning may make Verilator differ from a simulator that
+   Ignoring the warning may make Verilator differ from a simulator that
    accepts the protected code.
+
+
+.. option:: PROTOTYPEMIS
+
+   Error that a function prototype does not match in some respects the
+   out-of-block declaration of that function. IEEE requires this error.
+
+   The typical solution is to fix the prototype to match the declaration
+   exactly, including in number of arguments, name of arguments, argument
+   data types, and return data type (for functions).
+
+   Disabling this error will cause Verilator to ignore the prototype and
+   may make the code illegal in other tools.
 
 
 .. option:: RANDC
@@ -1464,6 +1731,9 @@ List Of Warnings
 
    Warns that a real number is being implicitly rounded to an integer, with
    possible loss of precision.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
 
    Faulty example:
 
@@ -1494,8 +1764,12 @@ List Of Warnings
 
 .. option:: REDEFMACRO
 
-   Warns that the code has redefined the same macro with a different value,
-   for example:
+   Warns that the code has redefined the same macro with a different value.
+
+   Ignoring this warning will only suppress the lint check; it will
+   simulate correctly.
+
+   For example:
 
    .. code-block:: sv
       :linenos:
@@ -1564,9 +1838,9 @@ List Of Warnings
 
          wire vec[6:0];
          initial begin
-            index = 7;
-            ...
-            if (index < 7) out = vec[index];  // Never will use vec[7]
+          index = 7;
+          ...
+          if (index < 7) out = vec[index];  // Never will use vec[7]
 
    Other tools with similar warnings: Icarus Verilog's select-range,
    "warning: ... [...] is selecting before vector" or "is selecting before
@@ -1630,6 +1904,18 @@ List Of Warnings
 
    Ignoring this warning may make Verilator simulations differ from other
    simulators.
+
+
+.. option:: SPECIFYIGN
+
+   Warns that Verilator does not support certain constructs in
+   :code:`specify` blocks, nor :code:`$sdf_annotate`, and the construct was
+   ignored.
+
+   Disabling the :option:`UNSUPPORTED` error also disables this warning.
+
+   Ignoring this warning may make Verilator ignore lint checking on the
+   construct, and get different results from other simulators.
 
 
 .. option:: SPLITVAR
@@ -1738,7 +2024,7 @@ List Of Warnings
          task foo(inout sig); ... endtask
          // ...
          always @* begin
-              foo(bus_we_select_from[2]);  // Will get TASKNSVAR error
+           foo(bus_we_select_from[2]);  // Will get TASKNSVAR error
          end
 
    Change this to:
@@ -1749,8 +2035,8 @@ List Of Warnings
          // ...
          reg foo_temp_out;
          always @* begin
-            foo(foo_temp_out);
-            bus_we_select_from[2] = foo_temp_out;
+           foo(foo_temp_out);
+           bus_we_select_from[2] = foo_temp_out;
          end
 
    Verilator doesn't do this conversion for you, as some more complicated
@@ -1995,6 +2281,14 @@ List Of Warnings
    :option:`UNUSEDSIGNAL`.
 
 
+.. option:: UNUSEDLOOP
+
+   .. TODO better example
+
+   Warns that a loop condition is always false, and so the body of the loop
+   will never be executed.
+
+
 .. option:: UNUSEDPARAM
 
    .. TODO better example
@@ -2118,7 +2412,7 @@ List Of Warnings
 
    .. include:: ../../docs/gen/ex_VARHIDDEN_msg.rst
 
-   To resolve this, rename the variable to an unique name.
+   To resolve this, rename the inner or outer variable to an unique name.
 
 
 .. option:: WAITCONST
@@ -2181,21 +2475,6 @@ List Of Warnings
    .. include:: ../../docs/gen/ex_WIDTHEXPAND_1_fixed.rst
 
 
-.. option:: WIDTHTRUNC
-
-   A more granular :option:`WIDTH` warning, for when a value is
-   truncated. See :option:`WIDTH`.
-
-.. option:: WIDTHEXPAND
-
-   A more granular :option:`WIDTH` warning, for when a value is zero
-   expanded. See :option:`WIDTH`.
-
-.. option:: WIDTHXZEXPAND
-
-   A more granular :option:`WIDTH` warning, for when a value is X/Z
-   expanded. See :option:`WIDTH`.
-
 .. option:: WIDTHCONCAT
 
    Warns that based on the width rules of Verilog, a concatenate, or
@@ -2220,6 +2499,21 @@ List Of Warnings
    width to the parameter definition (:code:`parameter [31:0]`), or add the
    width to the parameter usage (:code:`{PAR[31:0], PAR[31:0]}`).
 
+
+.. option:: WIDTHEXPAND
+
+   A more granular :option:`WIDTH` warning, for when a value is zero
+   expanded. See :option:`WIDTH`.
+
+.. option:: WIDTHTRUNC
+
+   A more granular :option:`WIDTH` warning, for when a value is
+   truncated. See :option:`WIDTH`.
+
+.. option:: WIDTHXZEXPAND
+
+   A more granular :option:`WIDTH` warning, for when a value is X/Z
+   expanded. See :option:`WIDTH`.
 
 .. option:: ZERODLY
 

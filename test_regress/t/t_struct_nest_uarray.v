@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
 `define stop $stop
-`define checkp(gotv,expv_s) do begin string gotv_s; gotv_s = $sformatf("%p", gotv); if ((gotv_s) !== (expv_s)) begin $write("%%Error: %s:%0d:  got='%s' exp='%s'\n", `__FILE__,`__LINE__, (gotv_s), (expv_s)); `stop; end end while(0);
+`define checkp(gotv,expv_s) do begin string gotv_s; gotv_s = $sformatf("%p", gotv); if ((gotv_s) != (expv_s)) begin $write("%%Error: %s:%0d:  got='%s' exp='%s'\n", `__FILE__,`__LINE__, (gotv_s), (expv_s)); `stop; end end while(0);
 
 typedef struct {
    struct {
@@ -15,7 +15,7 @@ typedef struct {
    } el[1];
 } pstr_t;
 
-module t (/*AUTOARG*/);
+module t;
 
    typedef struct {
       struct {
@@ -30,10 +30,10 @@ module t (/*AUTOARG*/);
 
    initial begin
       str.el[0].val.next = 6;
-      `checkp(str, "'{el:'{'{val:'{next:'h6}}} }");
+      `checkp(str, "'{el:'{'{val:'{next:'h6}}}}");
 
       pstr.el[0].val.next = 6;
-      `checkp(str, "'{el:'{'{val:'{next:'h6}}} }");
+      `checkp(str, "'{el:'{'{val:'{next:'h6}}}}");
 
       $write("*-* All Finished *-*\n");
       $finish;

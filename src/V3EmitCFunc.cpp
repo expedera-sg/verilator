@@ -247,17 +247,18 @@ void EmitCFunc::displayArg(AstNode* dispp, AstNode** elistp, bool isScan, const 
     AstNode* argp = nullptr;
     if (!ignore) {
         argp = *elistp;
-        // Prep for next parameter
-        *elistp = (*elistp)->nextp();
         if (VL_UNCOVERABLE(!argp)) {
             // expectDisplay() checks this first, so internal error if found here
             dispp->v3error(
                 "Internal: Missing arguments for $display-like format");  // LCOV_EXCL_LINE
             return;  // LCOV_EXCL_LINE
         }
+        // Prep for next parameter
+        *elistp = (*elistp)->nextp();
         if (argp->widthMin() > VL_VALUE_STRING_MAX_WIDTH) {
-            dispp->v3error("Exceeded limit of " + cvtToStr(VL_VALUE_STRING_MAX_WIDTH)
-                           + " bits for any $display-like arguments");
+            dispp->v3warn(E_UNSUPPORTED, "Unsupported: Exceeded limit of "
+                                             + cvtToStr(VL_VALUE_STRING_MAX_WIDTH)
+                                             + " bits for any $display-like arguments");
         }
         if (argp->widthMin() > 8 && fmtLetter == 'c') {
             // Technically legal, but surely not what the user intended.
@@ -289,18 +290,20 @@ void EmitCFunc::displayArg(AstNode* dispp, AstNode** elistp, bool isScan, const 
         }
         m_emitDispState.pushArg(fmtLetter, argp, "");
         if (fmtLetter == 't' || fmtLetter == '^') {
-            const AstSFormatF* fmtp = nullptr;
+            VTimescale timeunit = VTimescale::NONE;
             if (const AstDisplay* const nodep = VN_CAST(dispp, Display)) {
-                fmtp = nodep->fmtp();
+                timeunit = nodep->fmtp()->timeunit();
             } else if (const AstSFormat* const nodep = VN_CAST(dispp, SFormat)) {
-                fmtp = nodep->fmtp();
-            } else {
-                fmtp = VN_CAST(dispp, SFormatF);
+                timeunit = nodep->fmtp()->timeunit();
+            } else if (const AstSScanF* const nodep = VN_CAST(dispp, SScanF)) {
+                timeunit = nodep->timeunit();
+            } else if (const AstSFormatF* const nodep = VN_CAST(dispp, SFormatF)) {
+                timeunit = nodep->timeunit();
             }
-            UASSERT_OBJ(fmtp, dispp,
-                        "Use of %t must be under AstDisplay, AstSFormat, or AstSFormatF");
-            UASSERT_OBJ(!fmtp->timeunit().isNone(), fmtp, "timenunit must be set");
-            m_emitDispState.pushArg(' ', nullptr, cvtToStr((int)fmtp->timeunit().powerOfTen()));
+            UASSERT_OBJ(!timeunit.isNone(), dispp,
+                        "Use of %t must be under AstDisplay, AstSFormat, or AstSFormatF, or "
+                        "SScanF, and timeunit set");
+            m_emitDispState.pushArg(' ', nullptr, cvtToStr((int)timeunit.powerOfTen()));
         }
     } else {
         m_emitDispState.pushArg(fmtLetter, nullptr, "");
@@ -320,7 +323,7 @@ void EmitCFunc::displayNode(AstNode* nodep, AstScopeName* scopenamep, const stri
     bool inPct = false;
     bool ignore = false;
     for (; pos != vformat.end(); ++pos) {
-        // UINFO(1, "Parse '" << *pos << "'  IP" << inPct << " List " << cvtToHex(elistp) << endl);
+        // UINFO(1, "Parse '" << *pos << "'  IP" << inPct << " List " << cvtToHex(elistp));
         if (!inPct && pos[0] == '%') {
             inPct = true;
             ignore = false;
@@ -487,6 +490,7 @@ void EmitCFunc::emitCvtWideArray(AstNode* nodep, AstNode* fromp) {
 
 void EmitCFunc::emitConstant(AstConst* nodep, AstVarRef* assigntop, const string& assignString) {
     // Put out constant set to the specified variable, or given variable in a string
+    // TODO merge with V3EmitCConstInit::visit(AstConst)
     putns(nodep, "");
     if (nodep->num().isNull()) {
         putns(nodep, "VlNull{}");
@@ -495,7 +499,7 @@ void EmitCFunc::emitConstant(AstConst* nodep, AstVarRef* assigntop, const string
     } else if (nodep->num().isString()) {
         emitConstantString(nodep);
     } else if (nodep->isWide()) {
-        int upWidth = nodep->num().widthMin();
+        int upWidth = nodep->num().widthToFit();
         int chunks = 0;
         if (upWidth > EMITC_NUM_CONSTW * VL_EDATASIZE) {
             // Output e.g. 8 words in groups of e.g. 8
@@ -610,9 +614,10 @@ void EmitCFunc::emitSetVarConstant(const string& assignString, AstConst* constp)
 void EmitCFunc::emitVarReset(AstVar* varp, bool constructing) {
     // 'constructing' indicates that the object was just constructed, so no need to clear it also
     AstNodeDType* const dtypep = varp->dtypep()->skipRefp();
+    const string vlSelf = VSelfPointerText::replaceThis(m_useSelfForThis, "this->");
     const string varNameProtected = (VN_IS(m_modp, Class) || varp->isFuncLocal())
                                         ? varp->nameProtect()
-                                        : "vlSelf->" + varp->nameProtect();
+                                        : vlSelf + varp->nameProtect();
     if (varp->isIO() && m_modp->isTop() && optSystemC()) {
         // System C top I/O doesn't need loading, as the lower level subinst code does it.}
     } else if (varp->isParam()) {
@@ -743,7 +748,7 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, bool constructing,
         return "";
     } else if (basicp && basicp->isDynamicTriggerScheduler()) {
         return "";
-    } else if (basicp && basicp->isRandomGenerator()) {
+    } else if (basicp && (basicp->isRandomGenerator() || basicp->isStdRandomGenerator())) {
         return "";
     } else if (basicp) {
         const bool zeroit
@@ -751,7 +756,9 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, bool constructing,
                || varp->isFuncLocal()  // Randomization too slow
                || (basicp && basicp->isZeroInit())
                || (v3Global.opt.underlineZero() && !varp->name().empty() && varp->name()[0] == '_')
-               || (v3Global.opt.xInitial() == "fast" || v3Global.opt.xInitial() == "0"));
+               || (varp->isXTemp()
+                       ? (v3Global.opt.xAssign() != "unique")
+                       : (v3Global.opt.xInitial() == "fast" || v3Global.opt.xInitial() == "0")));
         const bool slow = !varp->isFuncLocal() && !varp->isClassMember();
         splitSizeInc(1);
         if (dtypep->isWide()) {  // Handle unpacked; not basicp->isWide
@@ -764,24 +771,36 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, bool constructing,
                     out += cvtToStr(constp->num().edataWord(w)) + "U;\n";
                 }
             } else {
-                out += zeroit ? (slow ? "VL_ZERO_RESET_W(" : "VL_ZERO_W(") : "VL_RAND_RESET_W(";
+                out += zeroit ? (slow ? "VL_ZERO_RESET_W(" : "VL_ZERO_W(")
+                              : (varp->isXTemp() ? "VL_SCOPED_RAND_RESET_ASSIGN_W("
+                                                 : "VL_SCOPED_RAND_RESET_W(");
                 out += cvtToStr(dtypep->widthMin());
-                out += ", " + varNameProtected + suffix + ");\n";
+                out += ", " + varNameProtected + suffix;
+                if (!zeroit) {
+                    emitVarResetScopeHash();
+                    const uint64_t salt = VString::hashMurmur(varp->prettyName());
+                    out += ", ";
+                    out += m_classOrPackage ? m_classOrPackageHash : "__VscopeHash";
+                    out += ", ";
+                    out += std::to_string(salt);
+                    out += "ull";
+                }
+                out += ");\n";
             }
             return out;
         } else {
             string out = varNameProtected + suffix;
-            // If --x-initial-edge is set, we want to force an initial
-            // edge on uninitialized clocks (from 'X' to whatever the
-            // first value is). Since the class is instantiated before
-            // initial blocks are evaluated, this should not clash
-            // with any initial block settings.
-            if (zeroit || (v3Global.opt.xInitialEdge() && varp->isUsedClock())) {
+            if (zeroit) {
                 out += " = 0;\n";
             } else {
-                out += " = VL_RAND_RESET_";
+                emitVarResetScopeHash();
+                const uint64_t salt = VString::hashMurmur(varp->prettyName());
+                out += " = VL_SCOPED_RAND_RESET_";
+                if (varp->isXTemp()) out += "ASSIGN_";
                 out += dtypep->charIQWN();
-                out += "(" + cvtToStr(dtypep->widthMin()) + ");\n";
+                out += "(" + cvtToStr(dtypep->widthMin()) + ", "
+                       + (m_classOrPackage ? m_classOrPackageHash : "__VscopeHash") + ", "
+                       + std::to_string(salt) + "ull);\n";
             }
             return out;
         }
@@ -789,4 +808,16 @@ string EmitCFunc::emitVarResetRecurse(const AstVar* varp, bool constructing,
         v3fatalSrc("Unknown node type in reset generator: " << varp->prettyTypeName());
     }
     return "";
+}
+
+void EmitCFunc::emitVarResetScopeHash() {
+    if (VL_LIKELY(m_createdScopeHash)) { return; }
+    if (m_classOrPackage) {
+        m_classOrPackageHash
+            = std::to_string(VString::hashMurmur(m_classOrPackage->name())) + "ULL";
+    } else {
+        puts(string("const uint64_t __VscopeHash = VL_MURMUR64_HASH(")
+             + (m_useSelfForThis ? "vlSelf" : "this") + "->name());\n");
+    }
+    m_createdScopeHash = true;
 }

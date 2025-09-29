@@ -81,6 +81,7 @@ private:
 
     // METHODS
     VL_UNCOPYABLE(V3HierBlock);
+    VL_UNMOVABLE(V3HierBlock);
     static StrGParams stringifyParams(const V3HierBlockParams::GParams& params,
                                       bool forGOption) VL_MT_DISABLED;
 
@@ -89,7 +90,7 @@ public:
         : m_modp{modp}
         , m_params{params} {}
 
-    ~V3HierBlock() VL_MT_DISABLED;
+    ~V3HierBlock() VL_MT_DISABLED = default;
 
     void addParent(V3HierBlock* parentp) { m_parents.insert(parentp); }
     bool hasParent() const { return !m_parents.empty(); }
@@ -101,8 +102,8 @@ public:
     const AstNodeModule* modp() const { return m_modp; }
 
     // For emitting Makefile and CMakeLists.txt
-    V3StringList commandArgs(bool forCMake) const VL_MT_DISABLED;
-    V3StringList hierBlockArgs() const VL_MT_DISABLED;
+    VStringList commandArgs(bool forCMake) const VL_MT_DISABLED;
+    VStringList hierBlockArgs() const VL_MT_DISABLED;
     string hierPrefix() const VL_MT_DISABLED;
     string hierSomeFilename(bool withDir, const char* prefix,
                             const char* suffix) const VL_MT_DISABLED;
@@ -123,7 +124,8 @@ public:
 
 // Holds relationship between AstNodeModule and V3HierBlock
 class V3HierBlockPlan final {
-    using HierMap = std::unordered_map<const AstNodeModule*, V3HierBlock*>;
+    // TODO: this map is non-deterministic
+    using HierMap = std::unordered_map<const AstNodeModule*, V3HierBlock>;
     HierMap m_blocks;
 
     V3HierBlockPlan() = default;

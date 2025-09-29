@@ -11,46 +11,36 @@ import vltest_bootstrap
 
 test.scenarios('dist')
 
-root = ".."
-
 Messages = {}
 Outputs = {}
 Suppressed = {}
 
 for s in [
         ' exited with ',  # Is hit; driver.py filters out
+        ' loading non-variable',  # Instead 'storing to parameter' or syntax error
+        '--pipe-filter: Can\'t pipe: ',  # Can't test
+        '--pipe-filter: fork failed: ',  # Can't test
+        'Assigned pin is neither input nor output',  # Instead earlier error
+        'Define missing argument \'',  # Instead get Define passed too many arguments
+        'Define or directive not defined: `',  # Instead V3ParseImp will warn
         'EOF in unterminated string',  # Instead get normal unterminated
         'Enum ranges must be integral, per spec',  # Hard to hit
-        'Import package not found: ',  # Errors earlier, until future parser released
+        'Expecting define formal arguments. Found: ',  # Instead define syntax error
         'Return with return value isn\'t underneath a function',  # Hard to hit, get other bad return messages
-        'Syntax error: Range \':\', \'+:\' etc are not allowed in the instance ',  # Instead get syntax error
         'Syntax error parsing real: \'',  # Instead can't lex the number
-        'Unsupported: Ranges ignored in port-lists',  # Hard to hit
+        'Syntax error: Range \':\', \'+:\' etc are not allowed in the instance ',  # Instead get syntax error
         'dynamic new() not expected in this context (expected under an assign)',  # Instead get syntax error
         # Not yet analyzed
-        ' loading non-variable',
-        '--pins-bv maximum is 65: ',
         '--pipe-filter protocol error, unexpected: ',
         '--pipe-filter returned bad status',
-        '--pipe-filter: Can\'t pipe: ',
-        '--pipe-filter: fork failed: ',
-        '--threads must be >= 0: ',
-        '--threads-max-mtasks must be >= 1: ',
-        '--trace-threads must be >= 1: ',
-        '/*verilator sformat*/ can only be applied to last argument of ',
         'Argument needed for string.',
         'Array initialization has too few elements, need element ',
-        'Assigned pin is neither input nor output',
         'Assignment pattern with no members',
         'Can\'t find varpin scope of ',
         'Can\'t read annotation file: ',
         'Can\'t resolve module reference: \'',
         'Can\'t write file: ',
-        'Circular logic when ordering code (non-cutable edge loop)',
-        'Define missing argument \'',
-        'Define or directive not defined: `',
-        'Exceeded limit of ',
-        'Expecting define formal arguments. Found: ',
+        'Expected data type, not a ',
         'Extern declaration\'s scope is not a defined class',
         'File not found: ',
         'Format to $display-like function must have constant format string',
@@ -58,12 +48,12 @@ for s in [
         'Illegal +: or -: select; type already selected, or bad dimension: ',
         'Illegal bit or array select; type already selected, or bad dimension: ',
         'Illegal range select; type already selected, or bad dimension: ',
-        'Member selection of non-struct/union object \'',
+        'Interface port declaration ',
         'Modport item is not a function/task: ',
         'Modport item is not a variable: ',
-        'Modport item not found: ',
         'Modport not referenced as <interface>.',
         'Modport not referenced from underneath an interface: ',
+        'Non-interface used as an interface: ',
         'Parameter type pin value isn\'t a type: Param ',
         'Parameter type variable isn\'t a type: Param ',
         'Pattern replication value of 0 is not legal.',
@@ -73,23 +63,19 @@ for s in [
         'String of ',
         'Symbol matching ',
         'Unexpected connection to arrayed port',
-        'Unmatched brackets in variable substitution in file: ',
         'Unsized numbers/parameters not allowed in streams.',
         'Unsupported RHS tristate construct: ',
         'Unsupported or syntax error: Unsized range in instance or other declaration',
         'Unsupported pullup/down (weak driver) construct.',
         'Unsupported tristate construct (not in propagation graph): ',
         'Unsupported tristate port expression: ',
-        'Unsupported/unknown built-in dynamic array method ',
         'Unsupported: $bits for queue',
-        'Unsupported: $c can\'t generate wider than 64 bits',
         'Unsupported: &&& expression',
         'Unsupported: +%- range',
         'Unsupported: +/- range',
         'Unsupported: 4-state numbers in this context',
         'Unsupported: Bind with instance list',
         'Unsupported: Concatenation to form ',
-        'Unsupported: Modport clocking',
         'Unsupported: Modport dotted port name',
         'Unsupported: Modport export with prototype',
         'Unsupported: Modport import with prototype',
@@ -98,7 +84,6 @@ for s in [
         'Unsupported: Public functions with >64 bit outputs; ',
         'Unsupported: Replication to form ',
         'Unsupported: Shifting of by over 32-bit number isn\'t supported.',
-        'Unsupported: Signal strengths are unsupported ',
         'Unsupported: Size-changing cast on non-basic data type',
         'Unsupported: Slice of non-constant bounds',
         'Unsupported: Unclocked assertion',
@@ -107,35 +92,27 @@ for s in [
         'Unsupported: [] dimensions',
         'Unsupported: \'default :/\' constraint',
         'Unsupported: \'{} .* patterns',
-        'Unsupported: \'{} tagged patterns',
-        'Unsupported: always[] (in property expression)',
         'Unsupported: assertion items in clocking blocks',
-        'Unsupported: default clocking identifier',
         'Unsupported: don\'t know how to deal with ',
         'Unsupported: eventually[] (in property expression)',
         'Unsupported: extern forkjoin',
-        'Unsupported: extern interface',
-        'Unsupported: extern module',
         'Unsupported: extern task',
         'Unsupported: modport export',
         'Unsupported: no_inline for tasks',
         'Unsupported: property port \'local\'',
-        'Unsupported: randsequence production list',
-        'Unsupported: randsequence repeat',
         'Unsupported: repeat event control',
-        'Unsupported: s_always (in property expression)',
         'Unsupported: static cast to ',
         'Unsupported: super',
-        'Unsupported: this.super',
-        'Unsupported: trireg',
         'Unsupported: with[] stream expression',
 ]:
     Suppressed[s] = True
 
 
 def read_messages():
-    for filename in test.glob_some(root + "/src/*"):
+    for filename in test.glob_some(test.root + "/src/*"):
         if not os.path.isfile(filename):
+            continue
+        if '#' in filename:
             continue
         with open(filename, 'r', encoding="utf8") as fh:
             lineno = 0
@@ -176,9 +153,9 @@ def read_messages():
 
 
 def read_outputs():
-    for filename in (test.glob_some(root + "/test_regress/t/*.py") +
-                     test.glob_some(root + "/test_regress/t/*.out") +
-                     test.glob_some(root + "/docs/gen/*.rst")):
+    for filename in (test.glob_some(test.root + "/test_regress/t/*.py") +
+                     test.glob_some(test.root + "/test_regress/t/*.out") +
+                     test.glob_some(test.root + "/docs/gen/*.rst")):
         if "t_dist_warn_coverage" in filename:  # Avoid our own suppressions
             continue
         with open(filename, 'r', encoding="latin-1") as fh:
@@ -196,7 +173,7 @@ def check():
     read_outputs()
 
     print("Number of suppressions = " + str(len(Suppressed)))
-    print("Coverage = %3.1f%%" % (100 - int(100 * len(Suppressed) / len(Messages))))
+    print("Coverage = %3.1f%%" % (100 - (100 * len(Suppressed) / len(Messages))))
     print()
 
     print("Checking for v3error/v3warn messages in sources without")
@@ -244,7 +221,7 @@ def check():
     print()
 
 
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
 check()
